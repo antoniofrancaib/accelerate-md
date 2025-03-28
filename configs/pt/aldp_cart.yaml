@@ -1,0 +1,13 @@
+name: "aldp"
+device: "cuda"
+temp_low: 1.0
+temp_high: 20.0
+total_n_temp: 10
+temp_schedule: "geom"  # or "linear"
+num_chains: 100
+num_steps: 500000
+swap_interval: 200
+check_interval: 10
+step_size: 0.0001
+plot_fold: "plots/pt"
+save_fold: "data/pt"

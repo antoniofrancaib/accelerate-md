@@ -1,0 +1,16 @@
+name: "gmm"
+device: "cuda"
+temp_low: 1.0
+temp_high: 100.0
+total_n_temp: 10
+temp_schedule: "geom"  # or "linear"
+num_chains: 1
+num_steps: 100000
+swap_interval: 10
+check_interval: 1000
+step_size: 0.0001
+plot_fold: "plots/pt"
+save_fold: "data/pt"
+num_samples_to_plot: 10000
+num_samples_for_eval: 10000
+burn_in: 1000
