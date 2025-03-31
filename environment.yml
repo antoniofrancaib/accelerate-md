@@ -15,3 +15,6 @@ dependencies:
   - scipy
   - scikit-learn
   - pot
+  - pip  # 👈 necessary if using pip inside conda
+  - pip:
+      - git+https://github.com/VincentStimper/boltzmann-generators.git
