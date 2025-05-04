@@ -1,0 +1,9 @@
+import pytest
+import sys
+import os
+
+# Add project root to Python path for all tests
+@pytest.fixture(autouse=True)
+def add_project_path():
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    yield 

@@ -10,10 +10,7 @@ __pycache__/
 
 .vscode/
 TASKS.md
-DATASET.md
 tasks/ 
-scripts/
-tests/
 
 env/
 venv/
