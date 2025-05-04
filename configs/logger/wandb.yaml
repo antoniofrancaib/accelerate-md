@@ -1,6 +1,6 @@
-entity: PTSD_cool
-project: "hydra_debug"
-offline: false
-group: ""
-tags: []
-experiment_group: null
+entity: jaf98
+project: "accelerate-md"
+offline: true
+group: "pt-experiments"
+tags: ["parallel-tempering", "molecular-dynamics"]
+experiment_group: "initial-runs"

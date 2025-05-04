@@ -9,14 +9,28 @@ __pycache__/
 .ipynb_checkpoints/
 
 .vscode/
+TASKS.md
+DATASET.md
+tasks/ 
+scripts/
+tests/
 
 env/
 venv/
 .accelmd/
 accelmd/
 
+.cursorrules
+.cursorignore
+.cursorignorerules
+.cursor/rules
+
 .DS_Store
 
 *.log
 *.out
 *.tmp
+
+# Weights & Biases
+wandb/
+configs/logger/wandb.yaml
