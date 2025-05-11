@@ -113,15 +113,17 @@ def train_realnvp(config, visualize=False):
     logger.info(f"Using device: {device}")
     
     # Setup directories
-    model_dir = Path(config.get('model_dir', 'models/realnvp'))
-    plot_dir = Path(config.get('plot_dir', 'plots/realnvp'))
+    model_dir = Path(config.get('model_dir', 'models/realnvp_5modes'))
+    plot_dir = Path(config.get('plot_dir', 'plots/realnvp_5modes'))
     model_dir.mkdir(exist_ok=True, parents=True)
     if visualize:
         plot_dir.mkdir(exist_ok=True, parents=True)
     
-    # Force 2-mode GMM regardless of config
+    # Force 5-mode GMM regardless of config
     gmm_config = config['gmm'].copy() 
-    gmm_config['n_mixes'] = 2  # Override to ensure 2-mode GMM
+    gmm_config['n_mixes'] = 5  # Set to 5 modes
+    # Set a smaller loc_scaling to place modes closer together
+    gmm_config['loc_scaling'] = 0.5  # Smaller scaling to tighten the clusters
     
     # Create GMM from config (only used at T=1)
     gmm = GMM(
@@ -131,19 +133,86 @@ def train_realnvp(config, visualize=False):
         device=device
     )
     
+    # Override the GMM locations with 5 modes in an ASYMMETRIC pattern
+    # This makes the 5 modes visually distinct
+    with torch.no_grad():
+        # Create asymmetric mode locations deliberately
+        # No longer in a perfect circle - varying distances and angles
+        locs = torch.zeros((5, 2), device=device)
+        
+        # Mode 1 - upper right
+        locs[0, 0] = 2.5
+        locs[0, 1] = 1.7
+        
+        # Mode 2 - upper left
+        locs[1, 0] = -1.8
+        locs[1, 1] = 2.0
+        
+        # Mode 3 - lower left
+        locs[2, 0] = -2.0
+        locs[2, 1] = -1.5
+        
+        # Mode 4 - lower right
+        locs[3, 0] = 1.4
+        locs[3, 1] = -2.2
+        
+        # Mode 5 - center (slightly offset)
+        locs[4, 0] = 0.5
+        locs[4, 1] = -0.3
+        
+        # Update the GMM's locations
+        gmm.locs.copy_(locs)
+        
+        # Make the covariance matrices different for each mode to create asymmetry
+        scale_trils = torch.zeros(5, 2, 2, device=device)
+        
+        # Mode 1 - narrow and elongated horizontally
+        scale_trils[0, 0, 0] = 0.3
+        scale_trils[0, 1, 1] = 0.2
+        
+        # Mode 2 - wider and elongated vertically
+        scale_trils[1, 0, 0] = 0.3
+        scale_trils[1, 1, 1] = 0.5
+        
+        # Mode 3 - small and circular
+        scale_trils[2, 0, 0] = 0.2
+        scale_trils[2, 1, 1] = 0.2
+        
+        # Mode 4 - large and circular
+        scale_trils[3, 0, 0] = 0.4
+        scale_trils[3, 1, 1] = 0.4
+        
+        # Mode 5 - medium and elongated diagonally
+        scale_trils[4, 0, 0] = 0.3
+        scale_trils[4, 1, 0] = 0.1  # off-diagonal term
+        scale_trils[4, 1, 1] = 0.3
+        
+        # Update the GMM's scale matrices - this gives us differently shaped modes
+        gmm.scale_trils.copy_(scale_trils)
+        
+        # Set up 5 asymmetric modes as before
+        # But make all weights more balanced to avoid missing modes
+        # Update weights to be more balanced - make sure no mode has too small a weight
+        gmm.cat_probs.copy_(torch.tensor([0.22, 0.18, 0.20, 0.22, 0.18], device=device))
+        
+    logger.info(f"Set up GMM with 5 asymmetric modes with varying shapes and balanced weights")
+    
     # Create RealNVP model
     model_config = config.get('model', {})
+    # Set a higher default for n_couplings to increase model capacity
+    if 'n_couplings' not in model_config:
+        model_config['n_couplings'] = 10  # Increased from default 6 to 10 for better expressivity
     flow = create_realnvp_flow(model_config).to(device)
     logger.info(f"Created RealNVP with {sum(p.numel() for p in flow.parameters())} parameters")
     
     # Training hyperparameters
     train_config = config.get('training', {})
-    n_epochs = train_config.get('n_epochs', 200)
+    n_epochs = train_config.get('n_epochs', 200)  # Increased default from lower value
     batch_size = train_config.get('batch_size', 256)
-    learning_rate = train_config.get('learning_rate', 1e-3)
-    n_samples = train_config.get('n_samples', 10000)
+    learning_rate = train_config.get('learning_rate', 3e-4)  # Reduced from 1e-3 for more stable training
+    n_samples = train_config.get('n_samples', 50000)
     val_split = train_config.get('val_split', 0.1)
-    patience = train_config.get('patience', 20)
+    patience = train_config.get('patience', 30)  # Increased patience for better convergence
     
     # Temperature settings
     temp_high = train_config.get('temp_high', 10.0)
@@ -180,10 +249,11 @@ def train_realnvp(config, visualize=False):
                 "n_samples": n_samples,
                 "model_type": "RealNVP",
                 "mapping": "high_to_low",
+                "n_modes": 5,  # Add info about 5 modes
             },
-            "name": f"realnvp_T{temp_high}_to_T{temp_low}",
+            "name": f"realnvp_5modes_T{temp_high}_to_T{temp_low}",
             "group": wandb_config.get("group", None),
-            "tags": wandb_config.get("tags", []) + ["realnvp", f"T{temp_high}-to-T{temp_low}"],
+            "tags": wandb_config.get("tags", []) + ["realnvp", f"T{temp_high}-to-T{temp_low}", "5modes"],
             "mode": "offline" if wandb_config.get("offline", True) else "online"
         }
         
@@ -222,12 +292,13 @@ def train_realnvp(config, visualize=False):
     
     # Optimizer and scheduler
     optimizer = optim.Adam(flow.parameters(), lr=learning_rate)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.5,
-        patience=patience // 2,
-        verbose=True
+    
+    # Use cosine annealing scheduler instead of ReduceLROnPlateau for smoother decay
+    total_steps = n_epochs * len(train_loader)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=learning_rate / 20  # Minimum LR will be 1/20th of initial LR
     )
     
     # Initial validation loss
@@ -266,6 +337,7 @@ def train_realnvp(config, visualize=False):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()  # Step the scheduler in each iteration instead of each epoch
             
             train_loss += loss.item() * len(x_high)
         
@@ -285,9 +357,6 @@ def train_realnvp(config, visualize=False):
                 val_loss += loss.item() * len(x_high)
         
         val_loss /= len(val_dataset)
-        
-        # Update scheduler
-        scheduler.step(val_loss)
         
         # Log progress
         logger.info(f"Epoch {epoch+1}/{n_epochs}: "
@@ -311,7 +380,7 @@ def train_realnvp(config, visualize=False):
             early_stop_counter = 0
             
             # Save model
-            model_path = model_dir / "realnvp_best.pt"
+            model_path = model_dir / "realnvp_5modes_best.pt"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': flow.state_dict(),
@@ -320,7 +389,8 @@ def train_realnvp(config, visualize=False):
                 'val_loss': val_loss,
                 'config': config,
                 'temp_high': temp_high,
-                'temp_low': temp_low
+                'temp_low': temp_low,
+                'n_modes': 5
             }, model_path)
             
             logger.info(f"Saved best model at epoch {epoch+1} with val_loss={val_loss:.4f}")
@@ -341,7 +411,7 @@ def train_realnvp(config, visualize=False):
             break
     
     # Load best model for final evaluation
-    best_model_path = model_dir / "realnvp_best.pt"
+    best_model_path = model_dir / "realnvp_5modes_best.pt"
     checkpoint = torch.load(best_model_path)
     flow.load_state_dict(checkpoint['model_state_dict'])
     
@@ -385,8 +455,8 @@ def visualize_temp_mapping(flow, gmm, epoch, temp_high, temp_low, plot_dir, devi
     Returns:
         Path to the saved visualization file
     """
-    # Generate samples from both temperatures
-    n_samples = 1000
+    # Generate samples from both temperatures - use more samples for better visualization
+    n_samples = 5000  # Increased from 1000 for denser visualization
     with torch.no_grad():
         # Create high temp GMM
         means = gmm.locs
@@ -416,29 +486,69 @@ def visualize_temp_mapping(flow, gmm, epoch, temp_high, temp_low, plot_dir, devi
     # Create figure with subplots
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # 1. Plot high temperature samples
+    # Define a grid for contour plotting
+    x = np.linspace(-5, 5, 100)
+    y = np.linspace(-5, 5, 100)
+    X, Y = np.meshgrid(x, y)
+    pos = np.dstack((X, Y))
+    
+    # 1. Plot high temperature samples with contours
     axes[0].scatter(hi_temp_samples[:, 0], hi_temp_samples[:, 1], s=5, alpha=0.5)
     axes[0].set_title(f"High Temperature (T={temp_high:.1f})")
-    axes[0].set_xlim(-8, 8)
-    axes[0].set_ylim(-8, 8)
+    axes[0].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[0].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[0].grid(alpha=0.3)
     
-    # 2. Plot flow-mapped samples (high → low)
+    # Add density contours for high temp
+    try:
+        from scipy.stats import gaussian_kde
+        kernel_hi = gaussian_kde(hi_temp_samples.T)
+        Z_hi = np.zeros_like(X)
+        for i in range(X.shape[0]):
+            for j in range(X.shape[1]):
+                Z_hi[i, j] = kernel_hi([X[i, j], Y[i, j]])
+        axes[0].contour(X, Y, Z_hi, levels=10, colors='red', alpha=0.3)
+    except Exception as e:
+        logger.warning(f"Could not plot contours: {e}")
+    
+    # 2. Plot flow-mapped samples (high → low) with contours
     axes[1].scatter(mapped_low[:, 0], mapped_low[:, 1], s=5, alpha=0.5)
     axes[1].set_title(f"Flow-Mapped High→Low (Epoch {epoch})")
-    axes[1].set_xlim(-8, 8)
-    axes[1].set_ylim(-8, 8)
+    axes[1].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[1].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[1].grid(alpha=0.3)
     
-    # 3. Plot true low temperature samples
+    # Add density contours for mapped low
+    try:
+        kernel_mapped = gaussian_kde(mapped_low.T)
+        Z_mapped = np.zeros_like(X)
+        for i in range(X.shape[0]):
+            for j in range(X.shape[1]):
+                Z_mapped[i, j] = kernel_mapped([X[i, j], Y[i, j]])
+        axes[1].contour(X, Y, Z_mapped, levels=10, colors='red', alpha=0.3)
+    except Exception as e:
+        logger.warning(f"Could not plot contours: {e}")
+    
+    # 3. Plot true low temperature samples with contours
     axes[2].scatter(low_temp_samples[:, 0], low_temp_samples[:, 1], s=5, alpha=0.5)
     axes[2].set_title(f"True Low Temperature (T={temp_low:.1f})")
-    axes[2].set_xlim(-8, 8)
-    axes[2].set_ylim(-8, 8)
+    axes[2].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[2].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[2].grid(alpha=0.3)
     
+    # Add density contours for low temp
+    try:
+        kernel_low = gaussian_kde(low_temp_samples.T)
+        Z_low = np.zeros_like(X)
+        for i in range(X.shape[0]):
+            for j in range(X.shape[1]):
+                Z_low[i, j] = kernel_low([X[i, j], Y[i, j]])
+        axes[2].contour(X, Y, Z_low, levels=10, colors='red', alpha=0.3)
+    except Exception as e:
+        logger.warning(f"Could not plot contours: {e}")
+    
     plt.tight_layout()
-    save_path = plot_dir / f"temp_mapping_epoch_{epoch}.png"
+    save_path = plot_dir / f"temp_mapping_5modes_epoch_{epoch}.png"
     plt.savefig(save_path, dpi=200)
     plt.close()
     
@@ -460,7 +570,7 @@ def verify_bidirectional_mapping(flow, gmm, temp_high, temp_low, plot_dir, devic
     Returns:
         Path to the saved verification file
     """
-    n_samples = 1000
+    n_samples = 5000  # Increased from 1000 for denser visualization
     with torch.no_grad():
         # Create high temp GMM
         means = gmm.locs
@@ -500,31 +610,31 @@ def verify_bidirectional_mapping(flow, gmm, temp_high, temp_low, plot_dir, devic
     # Row 1: High → Low mapping
     axes[0, 0].scatter(hi_samples_np[:, 0], hi_samples_np[:, 1], s=5, alpha=0.5)
     axes[0, 0].set_title(f"True High Temperature (T={temp_high:.1f})")
-    axes[0, 0].set_xlim(-8, 8)
-    axes[0, 0].set_ylim(-8, 8)
+    axes[0, 0].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[0, 0].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[0, 0].grid(alpha=0.3)
     
     axes[0, 1].scatter(mapped_low_np[:, 0], mapped_low_np[:, 1], s=5, alpha=0.5)
     axes[0, 1].set_title(f"Mapped High→Low via flow.inverse()")
-    axes[0, 1].set_xlim(-8, 8)
-    axes[0, 1].set_ylim(-8, 8)
+    axes[0, 1].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[0, 1].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[0, 1].grid(alpha=0.3)
     
     # Row 2: Low → High mapping
     axes[1, 0].scatter(low_samples_np[:, 0], low_samples_np[:, 1], s=5, alpha=0.5)
     axes[1, 0].set_title(f"True Low Temperature (T={temp_low:.1f})")
-    axes[1, 0].set_xlim(-8, 8)
-    axes[1, 0].set_ylim(-8, 8)
+    axes[1, 0].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[1, 0].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[1, 0].grid(alpha=0.3)
     
     axes[1, 1].scatter(mapped_high_np[:, 0], mapped_high_np[:, 1], s=5, alpha=0.5)
     axes[1, 1].set_title(f"Mapped Low→High via flow.forward()")
-    axes[1, 1].set_xlim(-8, 8)
-    axes[1, 1].set_ylim(-8, 8)
+    axes[1, 1].set_xlim(-5, 5)  # Smaller range to better see the 5 modes
+    axes[1, 1].set_ylim(-5, 5)  # Smaller range to better see the 5 modes
     axes[1, 1].grid(alpha=0.3)
     
     plt.tight_layout()
-    save_path = plot_dir / "bidirectional_verification.png"
+    save_path = plot_dir / "bidirectional_verification_5modes.png"
     plt.savefig(save_path, dpi=200)
     plt.close()
     
@@ -574,9 +684,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train RealNVP to map between temperature levels")
     parser.add_argument("--config", type=str, default="configs/pt/gmm.yaml",
                         help="Path to configuration file")
-    parser.add_argument("--model-dir", type=str, default="models/realnvp",
+    parser.add_argument("--model-dir", type=str, default="models/realnvp_5modes",
                         help="Directory to save model checkpoints")
-    parser.add_argument("--plot-dir", type=str, default="plots/realnvp",
+    parser.add_argument("--plot-dir", type=str, default="plots/realnvp_5modes",
                         help="Directory to save plots")
     parser.add_argument("--n-epochs", type=int, default=None,
                         help="Number of epochs to train")
@@ -584,7 +694,7 @@ def main():
                         help="Batch size for training")
     parser.add_argument("--learning-rate", type=float, default=None,
                         help="Learning rate for Adam optimizer")
-    parser.add_argument("--n-samples", type=int, default=None,
+    parser.add_argument("--n-samples", type=int, default=50000,
                         help="Number of samples to generate from GMM")
     parser.add_argument("--temp-high", type=float, default=None,
                         help="High temperature for the mapping")
@@ -648,9 +758,9 @@ def main():
     config['wandb'] = args.wandb and WANDB
     
     # Train the model
-    logger.info("Starting temperature-mapping RealNVP training...")
+    logger.info("Starting temperature-mapping RealNVP training for 5-mode GMM...")
     flow = train_realnvp(config, visualize=args.visualize)
-    logger.info("RealNVP training completed!")
+    logger.info("RealNVP training for 5-mode GMM completed!")
 
 
 if __name__ == "__main__":
