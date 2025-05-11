@@ -1,0 +1,32 @@
+# Flow model training hyperparameters
+# This file contains training-specific configuration for temperature-transition flows
+
+training:
+  # Optimization
+  learning_rate: 0.003      # Learning rate for the Adam optimizer (explicit float instead of scientific notation)
+  max_grad_norm: 5.0        # Maximum gradient norm for clipping
+  val_split: 0.1            # Fraction of data to use for validation
+  batch_size: 256           # Batch size for training
+  
+  # Training loop control
+  n_epochs: 100             # Maximum number of training epochs
+  patience: 20              # Early stopping patience (epochs without improvement)
+  val_freq: 1               # Validate every N epochs
+  
+  # Reproducibility
+  seed: 42                  # Random seed for reproducibility
+  
+  # Scheduler settings
+  scheduler_factor: 0.5     # Factor by which to reduce learning rate on plateau
+  scheduler_patience: 10    # Number of epochs with no improvement before reducing LR
+  
+  # I/O
+  model_dir: "models"       # Directory to save model checkpoints
+
+# Model architecture parameters
+model:
+  hidden_dim: 128           # Hidden dimension of the transformer model
+  num_blocks: 4             # Number of transformer blocks
+  layers_per_block: 2       # Number of attention layers per block
+  patch_size: 1             # Size of patches (typically 1 for 2D data)
+  use_nvp: true             # Whether to use affine coupling 

@@ -9,8 +9,11 @@ __pycache__/
 .ipynb_checkpoints/
 
 .vscode/
-TASKS.md
-tasks/ 
+docs/ 
+logs/
+models/
+tests/
+train_flow.sh
 
 env/
 venv/

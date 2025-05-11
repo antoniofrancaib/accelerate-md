@@ -1,6 +1,6 @@
-entity: jaf98
-project: "accelerate-md"
-offline: true
+entity: jaf98-university-of-cambridge
+project: "accelmd"
+offline: false
 group: "pt-experiments"
 tags: ["parallel-tempering", "molecular-dynamics"]
 experiment_group: "initial-runs"
