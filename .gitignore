@@ -1,5 +1,5 @@
-data/
-!data/aldp/position_min_energy.pt
+datasets/
+!datasets/aldp/position_min_energy.pt
 plots/
 results/
 
@@ -11,14 +11,12 @@ __pycache__/
 .vscode/
 docs/ 
 logs/
-models/
+checkpoints/
 tests/
 train_flow.sh
 
 env/
 venv/
-.accelmd/
-accelmd/
 
 .cursorrules
 .cursorignore
