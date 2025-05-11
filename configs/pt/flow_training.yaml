@@ -3,8 +3,10 @@
 
 training:
   # Optimization
-  learning_rate: 0.003      # Learning rate for the Adam optimizer (explicit float instead of scientific notation)
+  learning_rate: 0.0003     # Target learning rate after warmup (3e-4)
+  initial_lr: 0.0001        # Initial learning rate for warmup (1e-4)
   max_grad_norm: 5.0        # Maximum gradient norm for clipping
+  warmup_epochs: 5          # Number of epochs for linear warmup
   val_split: 0.1            # Fraction of data to use for validation
   batch_size: 256           # Batch size for training
   
@@ -16,17 +18,16 @@ training:
   # Reproducibility
   seed: 42                  # Random seed for reproducibility
   
-  # Scheduler settings
-  scheduler_factor: 0.5     # Factor by which to reduce learning rate on plateau
-  scheduler_patience: 10    # Number of epochs with no improvement before reducing LR
+  # Scheduler settings for cosine decay
+  eta_min_factor: 0.05      # Minimum LR will be this fraction of target LR
   
   # I/O
   model_dir: "models"       # Directory to save model checkpoints
 
 # Model architecture parameters
 model:
-  hidden_dim: 128           # Hidden dimension of the transformer model
-  num_blocks: 4             # Number of transformer blocks
-  layers_per_block: 2       # Number of attention layers per block
+  hidden_dim: 256           # Hidden dimension for coupling networks
+  n_couplings: 14           # Number of coupling layers 
+  use_permutation: true     # Whether to use coordinate permutation between blocks
   patch_size: 1             # Size of patches (typically 1 for 2D data)
   use_nvp: true             # Whether to use affine coupling 

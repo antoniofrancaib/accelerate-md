@@ -93,20 +93,35 @@ class TemperedGMMPairDataset(Dataset):
         return self.hi_temp_samples[idx], self.low_temp_samples[idx]
 
 
-def load_config(config_path):
-    """Load configuration from YAML file."""
+def load_config(config_path: str):
+    """Load a single YAML config file and return the parsed dictionary."""
     with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
+        config_part = yaml.safe_load(f)
+    return config_part or {}
 
 
-def train_realnvp(config, visualize=False):
+def merge_dicts(base: dict, other: dict):
+    """Recursively merge *other* into *base* (in-place) and return *base*."""
+    for key, value in other.items():
+        if (
+            key in base
+            and isinstance(base[key], dict)
+            and isinstance(value, dict)
+        ):
+            merge_dicts(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def train_realnvp(config, visualize=False, config_paths=None):
     """
     Train a RealNVP flow to map from high temperature to low temperature.
     
     Args:
         config (dict): Configuration dictionary
         visualize (bool): Whether to generate visualizations during training
+        config_paths (list): List of paths to configuration files
     """
     # Device configuration
     device = torch.device(config.get('device', 'cpu'))
@@ -242,7 +257,7 @@ def train_realnvp(config, visualize=False):
             "project": wandb_config.get("project", "temp-realnvp"),
             "entity": wandb_config.get("entity", None),
             "config": {
-                **config,
+                **config,  # merged configuration from YAML files
                 "temp_high": temp_high,
                 "temp_low": temp_low,
                 "seed": seed,
@@ -262,6 +277,15 @@ def train_realnvp(config, visualize=False):
         
         # Initialize wandb
         wandb.init(**wandb_init_args)
+        # Log the configuration files themselves as an artifact for full reproducibility
+        try:
+            artifact = wandb.Artifact("config_files", type="config")
+            for p in (config_paths or []):
+                if os.path.exists(p):
+                    artifact.add_file(p)
+            wandb.log_artifact(artifact)
+        except Exception as e:
+            logger.warning(f"Could not log config artifact to wandb: {e}")
         logger.info(f"Initialized wandb with project={wandb_init_args.get('project')}, mode={wandb_init_args.get('mode')}")
     
     # Create dataset and dataloader with tempered pairs
@@ -293,13 +317,41 @@ def train_realnvp(config, visualize=False):
     # Optimizer and scheduler
     optimizer = optim.Adam(flow.parameters(), lr=learning_rate)
     
-    # Use cosine annealing scheduler instead of ReduceLROnPlateau for smoother decay
-    total_steps = n_epochs * len(train_loader)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    # Create a learning rate scheduler with warmup followed by cosine decay
+    # 1. Start with a small learning rate (1e-4)
+    # 2. Linear warmup for 5 epochs to target learning rate (3e-4)
+    # 3. Cosine annealing for the rest of training
+    
+    # Set initial and target LRs for warmup
+    initial_lr = train_config.get('initial_lr', 1e-4)
+    warmup_epochs = train_config.get('warmup_epochs', 5)
+    eta_min_factor = train_config.get('eta_min_factor', 0.05)
+    
+    # Number of steps for each phase
+    warmup_steps = warmup_epochs * len(train_loader)
+    remaining_steps = (n_epochs - warmup_epochs) * len(train_loader)
+    
+    # Set initial LR
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = initial_lr
+    
+    # Create warmup scheduler (LinearLR from initial_lr to learning_rate)
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
         optimizer,
-        T_max=total_steps,
-        eta_min=learning_rate / 20  # Minimum LR will be 1/20th of initial LR
+        start_factor=initial_lr / learning_rate,  # start at initial_lr
+        end_factor=1.0,  # end at learning_rate
+        total_iters=warmup_steps
     )
+    
+    # Create cosine annealing scheduler for after warmup
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=remaining_steps,
+        eta_min=learning_rate * eta_min_factor  # Minimum LR as fraction of target LR
+    )
+    
+    # Define max gradient norm for clipping
+    max_grad_norm = train_config.get('max_grad_norm', 5.0)
     
     # Initial validation loss
     flow.eval()
@@ -326,7 +378,7 @@ def train_realnvp(config, visualize=False):
         # Training
         flow.train()
         train_loss = 0.0
-        for x_high, x_low in train_loader:
+        for batch_idx, (x_high, x_low) in enumerate(train_loader):
             x_high, x_low = x_high.to(device), x_low.to(device)
             
             # High → Low mapping loss
@@ -336,8 +388,16 @@ def train_realnvp(config, visualize=False):
             # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
+            # Clip gradients to improve stability
+            torch.nn.utils.clip_grad_norm_(flow.parameters(), max_grad_norm)
             optimizer.step()
-            scheduler.step()  # Step the scheduler in each iteration instead of each epoch
+            
+            # Step the appropriate scheduler based on current training step
+            global_step = epoch * len(train_loader) + batch_idx
+            if global_step < warmup_steps:
+                warmup_scheduler.step()
+            else:
+                cosine_scheduler.step()
             
             train_loss += loss.item() * len(x_high)
         
@@ -682,8 +742,12 @@ def verify_bidirectional_mapping(flow, gmm, temp_high, temp_low, plot_dir, devic
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Train RealNVP to map between temperature levels")
-    parser.add_argument("--config", type=str, default="configs/pt/gmm.yaml",
-                        help="Path to configuration file")
+    parser.add_argument("--config", type=str, action="append",
+                        default=[
+                            "configs/pt/gmm.yaml",
+                            "configs/pt/flow_training.yaml",
+                        ],
+                        help="Path(s) to YAML configuration file(s). Can be provided multiple times.")
     parser.add_argument("--model-dir", type=str, default="models/realnvp_5modes",
                         help="Directory to save model checkpoints")
     parser.add_argument("--plot-dir", type=str, default="plots/realnvp_5modes",
@@ -726,7 +790,14 @@ def main():
         WANDB = False
     
     # Load configuration
-    config = load_config(args.config)
+    config = {}
+    config_paths = args.config  # list of paths
+    for cfg_path in config_paths:
+        cfg_part = load_config(cfg_path)
+        merge_dicts(config, cfg_part)
+
+    # Keep track of which files were loaded – useful for logging
+    config['config_files'] = config_paths
     
     # Force CPU if requested
     if args.cpu:
@@ -759,7 +830,7 @@ def main():
     
     # Train the model
     logger.info("Starting temperature-mapping RealNVP training for 5-mode GMM...")
-    flow = train_realnvp(config, visualize=args.visualize)
+    flow = train_realnvp(config, visualize=args.visualize, config_paths=config_paths)
     logger.info("RealNVP training for 5-mode GMM completed!")
 
 

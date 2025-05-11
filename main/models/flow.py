@@ -64,11 +64,13 @@ class RealNVPFlow(nn.Module):
     Args:
         n_couplings (int): Number of coupling layers (>=2 recommended).
         hidden_dim  (int): Hidden units of the *s* and *t* subnetworks.
+        use_permutation (bool): Whether to use coordinate permutation between blocks.
     """
 
-    def __init__(self, n_couplings: int = 6, hidden_dim: int = 128):
+    def __init__(self, n_couplings: int = 14, hidden_dim: int = 256, use_permutation: bool = True):
         super().__init__()
         self.dim = 2  # fixed for current task
+        self.use_permutation = use_permutation
 
         # Alternating binary masks [1,0] and [0,1]
         masks = []
@@ -93,17 +95,40 @@ class RealNVPFlow(nn.Module):
     def forward(self, x: torch.Tensor):
         z = x
         logdet = torch.zeros(x.shape[0], device=x.device)
-        for c in self.couplings:
+        
+        # Apply coupling layers with permutation every two layers
+        for i, c in enumerate(self.couplings):
             z, ld = c.forward(z)
             logdet += ld
+            
+            # Add coordinate permutation after every 2 coupling layers (except last)
+            if self.use_permutation and i % 2 == 1 and i < len(self.couplings) - 1:
+                # Simple coordinate swap: [x, y] -> [y, x]
+                z = torch.stack([z[:, 1], z[:, 0]], dim=1)
+        
         return z, logdet
 
     def inverse(self, z: torch.Tensor):
         x = z
         logdet = torch.zeros(z.shape[0], device=z.device)
-        for c in reversed(self.couplings):
+        
+        # We need to apply operations in reverse order for the inverse
+        n_couplings = len(self.couplings)
+        for i in range(n_couplings):
+            # Apply permutation before coupling (if needed)
+            # Note: we're iterating forward but accessing coupling layers in reverse
+            rev_idx = n_couplings - 1 - i
+            
+            # If we just passed a permutation point (every 2 layers), apply the swap
+            if self.use_permutation and rev_idx % 2 == 0 and rev_idx > 0:
+                # Inverse of coordinate swap is the same operation
+                x = torch.stack([x[:, 1], x[:, 0]], dim=1)
+            
+            # Apply coupling layer
+            c = self.couplings[rev_idx]
             x, ld = c.inverse(x)
             logdet += ld
+        
         return x, logdet
 
     # ---------------------------------------------------------------------
@@ -130,6 +155,7 @@ def create_realnvp_flow(config: dict | None = None):
     """Instantiate a :class:`RealNVPFlow` from a (possibly empty) config."""
     if config is None:
         config = {}
-    n_couplings = int(config.get("n_couplings", 6))
-    hidden_dim = int(config.get("hidden_dim", 128))
-    return RealNVPFlow(n_couplings=n_couplings, hidden_dim=hidden_dim) 
+    n_couplings = int(config.get("n_couplings", 14))
+    hidden_dim = int(config.get("hidden_dim", 256))
+    use_permutation = bool(config.get("use_permutation", True))
+    return RealNVPFlow(n_couplings=n_couplings, hidden_dim=hidden_dim, use_permutation=use_permutation) 
