@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from src.utils.viz import visualize_temp_mapping, verify_bidirectional_mapping
+from src.accelmd.utils.viz import visualize_temp_mapping, verify_bidirectional_mapping
 
 # Try to import wandb, but make it optional
 try:
@@ -19,6 +19,7 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+    print("Warning: wandb not available. Install with 'pip install wandb' for experiment tracking.")
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
     
     # Create GMM from config (only used at T=1)
     # Import locally to avoid circular imports
-    from main.targets.gmm import GMM
+    from src.accelmd.targets.gmm import GMM
     
     gmm_config = config.get('gmm', {})
     
@@ -62,7 +63,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
         loc_scaling=gmm_config.get('loc_scaling', 0.5),
         device=device
     )
-    
+
     # Always apply custom configuration from the config file
     with torch.no_grad():
         # Apply custom locations if provided
@@ -99,11 +100,14 @@ def train_realnvp(config, visualize=False, config_paths=None):
     # Get temperature scaling method (default to "sqrt")
     temp_scaling_method = temp_config.get('scaling_method', 'sqrt')
     
+    # Create a high-T version of the GMM for the forward (low→high) pass
+    hi_gmm = gmm.tempered_version(temp_high, temp_scaling_method)
+
     logger.info(f"Using temperature scaling method: {temp_scaling_method}")
     logger.info(f"Set up GMM with {gmm.locs.shape[0]} modes for mapping from T={temp_high} to T={temp_low}")
     
     # Create RealNVP model
-    from src.models.realnvp import create_realnvp_flow
+    from src.accelmd.models.realnvp import create_realnvp_flow
     
     model_config = config.get('model', {})
     # Set a higher default for n_couplings to increase model capacity
@@ -127,8 +131,8 @@ def train_realnvp(config, visualize=False, config_paths=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     
-    # Initialize wandb if available
-    if WANDB_AVAILABLE:
+    # Initialize wandb if available and enabled
+    if WANDB_AVAILABLE and config.get('wandb', False):
         # Try to load wandb config from file
         wandb_config_path = "configs/logger/wandb.yaml"
         wandb_config = {}
@@ -140,13 +144,32 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 logger.info(f"Loaded wandb config from {wandb_config_path}")
             except Exception as e:
                 logger.warning(f"Error loading wandb config: {e}")
+                
+        # Check if the file exists but couldn't be loaded or if the file doesn't exist
+        if not wandb_config:
+            logger.warning(f"Could not load wandb config from {wandb_config_path}. Using defaults.")
         
         # Initialize wandb with loaded config
         n_modes = gmm.locs.shape[0]  # Get actual number of modes
         run_name = f"realnvp_{n_modes}modes_T{temp_high}_to_T{temp_low}"
         
+        # Get group information from wandb config
+        group = wandb_config.get("group", "temperature-mapping")
+        
+        # Get tags from wandb config (with fallback to empty list)
+        tags_from_config = wandb_config.get("tags", [])
+        # Ensure tags_from_config is a list
+        if not isinstance(tags_from_config, list):
+            tags_from_config = [tags_from_config]
+        
+        # Combine with run-specific tags
+        all_tags = tags_from_config + ["realnvp", f"T{temp_high}-to-T{temp_low}", f"{n_modes}modes"]
+        
+        # Use offline mode only if explicitly specified in config
+        is_offline = wandb_config.get("offline", False)
+        
         wandb_init_args = {
-            "project": wandb_config.get("project", "temp-realnvp"),
+            "project": wandb_config.get("project", "accelmd"),
             "entity": wandb_config.get("entity", None),
             "config": {
                 **config,  # merged configuration from YAML files
@@ -159,16 +182,20 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 "n_modes": n_modes,
             },
             "name": run_name,
-            "group": wandb_config.get("group", None),
-            "tags": wandb_config.get("tags", []) + ["realnvp", f"T{temp_high}-to-T{temp_low}", f"{n_modes}modes"],
-            "mode": "offline" if wandb_config.get("offline", True) else "online"
+            "group": group,
+            "tags": all_tags,
+            "mode": "offline" if is_offline else "online"
         }
         
         # Remove None values
         wandb_init_args = {k: v for k, v in wandb_init_args.items() if v is not None}
         
+        logger.info(f"Initializing wandb with: project={wandb_init_args.get('project')}, "
+                   f"mode={'offline' if is_offline else 'online'}")
+        
         # Initialize wandb
         wandb.init(**wandb_init_args)
+        
         # Log the configuration files themselves as an artifact for full reproducibility
         try:
             artifact = wandb.Artifact("config_files", type="config")
@@ -178,10 +205,14 @@ def train_realnvp(config, visualize=False, config_paths=None):
             wandb.log_artifact(artifact)
         except Exception as e:
             logger.warning(f"Could not log config artifact to wandb: {e}")
-        logger.info(f"Initialized wandb with project={wandb_init_args.get('project')}, mode={wandb_init_args.get('mode')}")
+    else:
+        if not WANDB_AVAILABLE:
+            logger.info("Weights & Biases (wandb) not available. Install with 'pip install wandb' for experiment tracking.")
+        elif not config.get('wandb', False):
+            logger.info("Weights & Biases (wandb) not enabled. Use --wandb flag to enable.")
     
     # Create dataset and dataloader with tempered pairs
-    from src.data.tempered_gmm import TemperedGMMPairDataset
+    from src.accelmd.data.tempered_gmm import TemperedGMMPairDataset
     
     # Create the dataset with the temperature scaling method
     dataset = TemperedGMMPairDataset(
@@ -261,9 +292,24 @@ def train_realnvp(config, visualize=False, config_paths=None):
         for x_high, x_low in val_loader:
             x_high, x_low = x_high.to(device), x_low.to(device)
             
-            # High → Low mapping loss: how well does flow.inverse(x_high) match x_low?
-            y_low, logdet = flow.inverse(x_high)
-            loss = -(gmm.log_prob(y_low) / temp_low + logdet).mean()
+            # ------------------------------------------------------------------
+            #  Bidirectional mapping losses
+            # ------------------------------------------------------------------
+            # (a) High → Low  (inverse)
+            y_low, ld_inv = flow.inverse(x_high)                # inverse pass
+            lo_logp = gmm.log_prob(y_low)                       # density at T=1
+
+            # (b) Low → High  (forward)
+            y_high, ld_fwd = flow.forward(x_low)                # forward pass
+            hi_logp = hi_gmm.log_prob(y_high) / temp_high       # scale log‑p by 1/T
+
+            # (c) Optional pairwise term (stabilises training)
+            pair_loss = ((y_low - x_low) ** 2).sum(-1).mean()   # MSE in data space
+
+            # Total
+            loss = (-(lo_logp + ld_inv).mean()
+                    -(hi_logp + ld_fwd).mean()
+                    + 0.05 * pair_loss)
             
             val_loss += loss.item() * len(x_high)
     val_loss /= len(val_dataset)
@@ -284,7 +330,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
             
             # High → Low mapping loss
             y_low, logdet = flow.inverse(x_high)
-            loss = -(gmm.log_prob(y_low) / temp_low + logdet).mean()
+            loss = -(gmm.log_prob(y_low) + logdet).mean()
             
             # Backward and optimize
             optimizer.zero_grad()
@@ -313,7 +359,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 
                 # High → Low mapping loss
                 y_low, logdet = flow.inverse(x_high)
-                loss = -(gmm.log_prob(y_low) / temp_low + logdet).mean()
+                loss = -(gmm.log_prob(y_low) + logdet).mean()
                 
                 val_loss += loss.item() * len(x_high)
         
@@ -326,7 +372,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
                    f"LR={optimizer.param_groups[0]['lr']:.6f}")
         
         # Log metrics to wandb
-        if WANDB_AVAILABLE:
+        if WANDB_AVAILABLE and config.get('wandb', False):
             wandb.log({
                 "train_loss": train_loss,
                 "val_loss": val_loss,
@@ -362,7 +408,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 viz_path = visualize_temp_mapping(flow, gmm, epoch, temp_high, temp_low, plot_dir, device)
                 
                 # Log visualization to wandb
-                if WANDB_AVAILABLE and viz_path:
+                if WANDB_AVAILABLE and config.get('wandb', False) and viz_path:
                     wandb.log({f"temp_mapping_epoch_{epoch}": wandb.Image(str(viz_path))})
         else:
             early_stop_counter += 1
@@ -386,14 +432,14 @@ def train_realnvp(config, visualize=False, config_paths=None):
         verify_path = verify_bidirectional_mapping(flow, gmm, temp_high, temp_low, plot_dir, device)
         
         # Log final visualizations to wandb
-        if WANDB_AVAILABLE:
+        if WANDB_AVAILABLE and config.get('wandb', False):
             if viz_path:
                 wandb.log({"final_mapping": wandb.Image(str(viz_path))})
             if verify_path:
                 wandb.log({"bidirectional_verification": wandb.Image(str(verify_path))})
     
     # Finish wandb run
-    if WANDB_AVAILABLE:
+    if WANDB_AVAILABLE and config.get('wandb', False):
         # Log final best metrics
         wandb.run.summary["best_val_loss"] = best_val_loss
         wandb.run.summary["best_epoch"] = best_epoch
@@ -405,7 +451,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
 if __name__ == "__main__":
     import argparse
     import sys
-    from src.utils.config import load_config, merge_dicts
+    from src.accelmd.utils.config import load_config, merge_dicts
     
     # Configure logging
     logging.basicConfig(

@@ -79,6 +79,10 @@ class RealNVPFlow(nn.Module):
                 mask[:dim//2] = 1.0
             else:
                 mask[dim//2:] = 1.0
+
+            # Add a random boolean to decide whether to flip the mask – helps break symmetry
+            if torch.rand(1) < 0.5:
+                mask = 1.0 - mask
             masks.append(mask)
 
         self.couplings = nn.ModuleList([
@@ -98,22 +102,12 @@ class RealNVPFlow(nn.Module):
         z = x
         logdet = torch.zeros(x.shape[0], device=x.device)
         
-        # Apply coupling layers with permutation every two layers
-        for i, c in enumerate(self.couplings):
+        for c in self.couplings:
             z, ld = c.forward(z)
             logdet += ld
-            
-            # Add coordinate permutation after every 2 coupling layers (except last)
-            if self.use_permutation and i % 2 == 1 and i < len(self.couplings) - 1:
-                # Generalized coordinate permutation for arbitrary dimensions
-                if self.dim == 2:
-                    # Special case for 2D: simple swap
-                    z = torch.stack([z[:, 1], z[:, 0]], dim=1)
-                else:
-                    # For higher dimensions, reverse the order
-                    indices = torch.arange(z.size(1)-1, -1, -1)
-                    z = z[:, indices]
-        
+            if self.use_permutation:
+                z = z.flip(1) if self.dim != 2 else torch.stack([z[:, 1], z[:, 0]], dim=1)
+
         return z, logdet
 
     def inverse(self, z: torch.Tensor):
@@ -122,23 +116,14 @@ class RealNVPFlow(nn.Module):
         
         # We need to apply operations in reverse order for the inverse
         n_couplings = len(self.couplings)
-        for i in range(n_couplings):
-            # Apply permutation before coupling (if needed)
-            # Note: we're iterating forward but accessing coupling layers in reverse
-            rev_idx = n_couplings - 1 - i
-            
-            # If we just passed a permutation point (every 2 layers), apply the swap
-            if self.use_permutation and rev_idx % 2 == 0 and rev_idx > 0:
-                # Inverse permutation (same as forward for reversals)
+        for rev_idx in reversed(range(n_couplings)):
+            # --- undo the permutation BEFORE the coupling ---
+            if self.use_permutation:
                 if self.dim == 2:
-                    # Special case for 2D: simple swap
-                    x = torch.stack([x[:, 1], x[:, 0]], dim=1)
+                    x = torch.stack([x[:, 1], x[:, 0]], dim=1)  # 2‑D swap
                 else:
-                    # For higher dimensions, reverse the order
-                    indices = torch.arange(x.size(1)-1, -1, -1)
-                    x = x[:, indices]
-            
-            # Apply coupling layer
+                    x = x.flip(1)                               # general reverse
+            # coupling layer
             c = self.couplings[rev_idx]
             x, ld = c.inverse(x)
             logdet += ld

@@ -34,4 +34,4 @@ model:
   use_nvp: true             # Whether to use affine coupling 
 
 # Configuration for plots and visualizations
-plot_dir: "plots/realnvp"    # Directory to save plots 
+plot_dir: "plots/realnvp_3modes"    # Directory to save plots 
