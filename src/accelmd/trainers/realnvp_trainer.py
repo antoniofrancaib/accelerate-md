@@ -1,5 +1,5 @@
 """
-Trainer for RealNVP normalizing flow models for temperature transitions.
+Trainer for RealNVP normalizing flow models for bidirectional temperature transitions.
 """
 
 import os
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def train_realnvp(config, visualize=False, config_paths=None):
     """
-    Train a RealNVP flow to map from high temperature to low temperature.
+    Train a RealNVP flow to map bidirectionally between high temperature and low temperature.
     
     Args:
         config (dict): Configuration dictionary
@@ -178,7 +178,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 "seed": seed,
                 "n_samples": n_samples,
                 "model_type": "RealNVP",
-                "mapping": "high_to_low",
+                "mapping": "bidirectional",
                 "n_modes": n_modes,
             },
             "name": run_name,
@@ -288,6 +288,9 @@ def train_realnvp(config, visualize=False, config_paths=None):
     # Initial validation loss
     flow.eval()
     val_loss = 0.0
+    val_high_to_low_loss = 0.0
+    val_low_to_high_loss = 0.0
+    val_pair_loss = 0.0
     with torch.no_grad():
         for x_high, x_low in val_loader:
             x_high, x_low = x_high.to(device), x_low.to(device)
@@ -298,23 +301,36 @@ def train_realnvp(config, visualize=False, config_paths=None):
             # (a) High → Low  (inverse)
             y_low, ld_inv = flow.inverse(x_high)                # inverse pass
             lo_logp = gmm.log_prob(y_low)                       # density at T=1
+            high_to_low_loss = -(lo_logp + ld_inv).mean()       # high->low direction loss
 
             # (b) Low → High  (forward)
             y_high, ld_fwd = flow.forward(x_low)                # forward pass
             hi_logp = hi_gmm.log_prob(y_high) / temp_high       # scale log‑p by 1/T
+            low_to_high_loss = -(hi_logp + ld_fwd).mean()       # low->high direction loss
 
             # (c) Optional pairwise term (stabilises training)
             pair_loss = ((y_low - x_low) ** 2).sum(-1).mean()   # MSE in data space
+            pair_loss_term = 0.05 * pair_loss                  # weighted pair loss
 
-            # Total
-            loss = (-(lo_logp + ld_inv).mean()
-                    -(hi_logp + ld_fwd).mean()
-                    + 0.05 * pair_loss)
+            # Total bidirectional loss
+            loss = high_to_low_loss + low_to_high_loss + pair_loss_term
+            
+            # Skip batch if loss is NaN or Inf to avoid destabilising training
+            if not torch.isfinite(loss):
+                logger.warning(f"Skipping batch {batch_idx} in epoch {epoch} due to non-finite loss")
+                continue
             
             val_loss += loss.item() * len(x_high)
-    val_loss /= len(val_dataset)
+            val_high_to_low_loss += high_to_low_loss.item() * len(x_high)
+            val_low_to_high_loss += low_to_high_loss.item() * len(x_high)
+            val_pair_loss += pair_loss.item() * len(x_high)
     
-    logger.info(f"Initial validation loss: {val_loss:.4f}")
+    val_loss /= len(val_dataset)
+    val_high_to_low_loss /= len(val_dataset)
+    val_low_to_high_loss /= len(val_dataset)
+    val_pair_loss /= len(val_dataset)
+    
+    logger.info(f"Initial validation loss: {val_loss:.4f} (High→Low: {val_high_to_low_loss:.4f}, Low→High: {val_low_to_high_loss:.4f}, Pair: {val_pair_loss:.4f})")
     
     # Training loop
     best_val_loss = val_loss
@@ -325,12 +341,36 @@ def train_realnvp(config, visualize=False, config_paths=None):
         # Training
         flow.train()
         train_loss = 0.0
+        train_high_to_low_loss = 0.0
+        train_low_to_high_loss = 0.0
+        train_pair_loss = 0.0
         for batch_idx, (x_high, x_low) in enumerate(train_loader):
             x_high, x_low = x_high.to(device), x_low.to(device)
             
-            # High → Low mapping loss
-            y_low, logdet = flow.inverse(x_high)
-            loss = -(gmm.log_prob(y_low) + logdet).mean()
+            # ------------------------------------------------------------------
+            #  Bidirectional mapping losses
+            # ------------------------------------------------------------------
+            # (a) High → Low  (inverse)
+            y_low, ld_inv = flow.inverse(x_high)                # inverse pass
+            lo_logp = gmm.log_prob(y_low)                       # density at T=1
+            high_to_low_loss = -(lo_logp + ld_inv).mean()       # high->low direction loss
+
+            # (b) Low → High  (forward)
+            y_high, ld_fwd = flow.forward(x_low)                # forward pass
+            hi_logp = hi_gmm.log_prob(y_high) / temp_high       # scale log‑p by 1/T
+            low_to_high_loss = -(hi_logp + ld_fwd).mean()       # low->high direction loss
+
+            # (c) Optional pairwise term (stabilises training)
+            pair_loss = ((y_low - x_low) ** 2).sum(-1).mean()   # MSE in data space
+            pair_loss_term = 0.05 * pair_loss                  # weighted pair loss
+
+            # Total bidirectional loss
+            loss = high_to_low_loss + low_to_high_loss + pair_loss_term
+            
+            # Skip batch if loss is NaN or Inf to avoid destabilising training
+            if not torch.isfinite(loss):
+                logger.warning(f"Skipping batch {batch_idx} in epoch {epoch} due to non-finite loss")
+                continue
             
             # Backward and optimize
             optimizer.zero_grad()
@@ -347,35 +387,76 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 cosine_scheduler.step()
             
             train_loss += loss.item() * len(x_high)
+            train_high_to_low_loss += high_to_low_loss.item() * len(x_high)
+            train_low_to_high_loss += low_to_high_loss.item() * len(x_high)
+            train_pair_loss += pair_loss.item() * len(x_high)
         
         train_loss /= len(train_dataset)
+        train_high_to_low_loss /= len(train_dataset)
+        train_low_to_high_loss /= len(train_dataset)
+        train_pair_loss /= len(train_dataset)
         
         # Validation
         flow.eval()
         val_loss = 0.0
+        val_high_to_low_loss = 0.0
+        val_low_to_high_loss = 0.0
+        val_pair_loss = 0.0
         with torch.no_grad():
             for x_high, x_low in val_loader:
                 x_high, x_low = x_high.to(device), x_low.to(device)
                 
-                # High → Low mapping loss
-                y_low, logdet = flow.inverse(x_high)
-                loss = -(gmm.log_prob(y_low) + logdet).mean()
+                # ------------------------------------------------------------------
+                #  Bidirectional mapping losses (same as training)
+                # ------------------------------------------------------------------
+                # (a) High → Low  (inverse)
+                y_low, ld_inv = flow.inverse(x_high)                # inverse pass
+                lo_logp = gmm.log_prob(y_low)                       # density at T=1
+                high_to_low_loss = -(lo_logp + ld_inv).mean()       # high->low direction loss
+
+                # (b) Low → High  (forward)
+                y_high, ld_fwd = flow.forward(x_low)                # forward pass
+                hi_logp = hi_gmm.log_prob(y_high) / temp_high       # scale log‑p by 1/T
+                low_to_high_loss = -(hi_logp + ld_fwd).mean()       # low->high direction loss
+
+                # (c) Optional pairwise term
+                pair_loss = ((y_low - x_low) ** 2).sum(-1).mean()   # MSE in data space
+                pair_loss_term = 0.05 * pair_loss                  # weighted pair loss
+
+                # Total bidirectional loss
+                loss = high_to_low_loss + low_to_high_loss + pair_loss_term
+                
+                # Skip batch if loss is NaN or Inf
+                if not torch.isfinite(loss):
+                    continue
                 
                 val_loss += loss.item() * len(x_high)
+                val_high_to_low_loss += high_to_low_loss.item() * len(x_high)
+                val_low_to_high_loss += low_to_high_loss.item() * len(x_high)
+                val_pair_loss += pair_loss.item() * len(x_high)
         
         val_loss /= len(val_dataset)
+        val_high_to_low_loss /= len(val_dataset)
+        val_low_to_high_loss /= len(val_dataset)
+        val_pair_loss /= len(val_dataset)
         
         # Log progress
         logger.info(f"Epoch {epoch+1}/{n_epochs}: "
-                   f"Train loss={train_loss:.4f}, "
-                   f"Val loss={val_loss:.4f}, "
+                   f"Train loss={train_loss:.4f} (H→L: {train_high_to_low_loss:.4f}, L→H: {train_low_to_high_loss:.4f}, Pair: {train_pair_loss:.4f}), "
+                   f"Val loss={val_loss:.4f} (H→L: {val_high_to_low_loss:.4f}, L→H: {val_low_to_high_loss:.4f}, Pair: {val_pair_loss:.4f}), "
                    f"LR={optimizer.param_groups[0]['lr']:.6f}")
         
         # Log metrics to wandb
         if WANDB_AVAILABLE and config.get('wandb', False):
             wandb.log({
-                "train_loss": train_loss,
-                "val_loss": val_loss,
+                "train/total_loss": train_loss,
+                "train/high_to_low_loss": train_high_to_low_loss,
+                "train/low_to_high_loss": train_low_to_high_loss,
+                "train/pair_loss": train_pair_loss,
+                "val/total_loss": val_loss,
+                "val/high_to_low_loss": val_high_to_low_loss,
+                "val/low_to_high_loss": val_low_to_high_loss,
+                "val/pair_loss": val_pair_loss,
                 "learning_rate": optimizer.param_groups[0]['lr'],
                 "epoch": epoch
             })

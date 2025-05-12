@@ -36,6 +36,8 @@ class _RealNVPCoupling(nn.Module):
     def forward(self, x: torch.Tensor):
         x_masked = x * self.mask  # part that remains unchanged
         s = self.s_net(x_masked) * (1.0 - self.mask)
+        # Clamp the scale to avoid numerical overflow in exp(s)
+        s = torch.clamp(s, min=-7.0, max=7.0)
         t = self.t_net(x_masked) * (1.0 - self.mask)
 
         y = x_masked + (1.0 - self.mask) * (x * torch.exp(s) + t)
@@ -45,6 +47,8 @@ class _RealNVPCoupling(nn.Module):
     def inverse(self, y: torch.Tensor):
         y_masked = y * self.mask
         s = self.s_net(y_masked) * (1.0 - self.mask)
+        # Clamp the scale for stability
+        s = torch.clamp(s, min=-7.0, max=7.0)
         t = self.t_net(y_masked) * (1.0 - self.mask)
 
         x = y_masked + (1.0 - self.mask) * ((y - t) * torch.exp(-s))

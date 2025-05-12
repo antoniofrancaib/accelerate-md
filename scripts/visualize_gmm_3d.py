@@ -1,31 +1,53 @@
 #!/usr/bin/env python3
 """
-GMM Contour Plots with MCMC Samples for Multiple Replicas
+GMM Contour Plots with MCMC Samples based on configuration from gmm.yaml
 """
 import os
 import sys
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import yaml
+from pathlib import Path
 
 # Add the parent directory to the path to import main modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main.targets.gmm import GMM
-from main.sampler.sampler import LangevinDynamics
+from src.accelmd.targets.gmm import GMM
+from src.accelmd.sampler.sampler import LangevinDynamics
+from src.accelmd.utils.config import load_config
 
 
-def create_gmm(dim=2, n_mixes=5, loc_scaling=2.0, device="cpu", seed=42):
-    """Create a Gaussian Mixture Model with specified parameters."""
-    torch.manual_seed(seed)
-    target = GMM(
-        dim=dim, 
-        n_mixes=n_mixes, 
-        loc_scaling=loc_scaling, 
-        seed=seed,
+def create_gmm_from_config(config, device="cpu"):
+    """Create a Gaussian Mixture Model from configuration."""
+    gmm_config = config.get('gmm', {})
+    
+    # Initialize GMM with basic parameters
+    gmm = GMM(
+        dim=gmm_config.get('dim', 2),
+        n_mixes=gmm_config.get('n_mixes', 5),
+        loc_scaling=gmm_config.get('loc_scaling', 1.0),
         device=device
     )
-    return target
+    
+    # Apply custom configuration
+    with torch.no_grad():
+        # Apply custom locations if provided
+        if 'locations' in gmm_config:
+            custom_locs = torch.tensor(gmm_config['locations'], device=device)
+            gmm.locs.copy_(custom_locs)
+            
+        # Apply custom scales if provided
+        if 'scales' in gmm_config:
+            custom_scales = torch.tensor(gmm_config['scales'], device=device)
+            gmm.scale_trils.copy_(custom_scales)
+            
+        # Apply custom weights if provided
+        if 'weights' in gmm_config:
+            custom_weights = torch.tensor(gmm_config['weights'], device=device)
+            gmm.cat_probs.copy_(custom_weights)
+    
+    return gmm
 
 
 def run_mcmc_sampling(gmm, n_samples=1000, step_size=0.5, burn_in=200, replica_seed=42):
@@ -146,6 +168,10 @@ def plot_gmm_contours_side_by_side(gmm, samples_list, replica_labels, bounds=Non
     # Create figure with subplots
     fig, axes = plt.subplots(1, len(samples_list), figsize=(18, 6), constrained_layout=True)
     
+    # Handle the case when there's only one replica
+    if len(samples_list) == 1:
+        axes = [axes]
+    
     # Plot each replica in its own subplot
     for i, (samples, label, ax) in enumerate(zip(samples_list, replica_labels, axes)):
         # Plot contour
@@ -172,30 +198,40 @@ def plot_gmm_contours_side_by_side(gmm, samples_list, replica_labels, bounds=Non
     cbar.set_label('Probability Density')
     
     # Set an overall title
-    fig.suptitle('GMM Contour Plots with MCMC Samples for Different Replicas', fontsize=16)
+    fig.suptitle('GMM Contour Plots with MCMC Samples based on gmm.yaml config', fontsize=16)
     
     return fig
 
 
 def main():
-    """Main function to create and visualize GMM contour with MCMC samples from multiple replicas."""
+    """Main function to visualize GMM contour with MCMC samples based on config file."""
     # Create output directory
     os.makedirs("gmm_visualizations", exist_ok=True)
     
-    # Set device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Set device to CPU for visualization
+    device = "cpu"
     
-    # Create a standard GMM
-    gmm = create_gmm(dim=2, n_mixes=10, loc_scaling=5.0, device=device)
+    # Load configuration from YAML file
+    config_path = "configs/pt/gmm.yaml"
+    config = load_config(config_path)
     
-    # Generate MCMC samples for multiple replicas
-    print("Generating MCMC samples for multiple replicas...")
+    # Force CPU device for visualization regardless of config
+    print(f"Using CPU device for visualization")
+    
+    # Create GMM from config
+    gmm = create_gmm_from_config(config, device=device)
+    
+    # Get the number of modes from the loaded GMM
+    n_modes = gmm.locs.shape[0]
+    print(f"Loaded GMM with {n_modes} modes from {config_path}")
+    
+    # Get sampling parameters from config if available
+    pt_config = config.get('pt', {})
+    step_size = pt_config.get('step_size', 0.5)
     
     # Define replica parameters
     replica_configs = [
-        {"step_size": 0.1, "seed": 42, "label": "Replica 1 (step=0.1)"},
-        {"step_size": 0.5, "seed": 43, "label": "Replica 2 (step=0.5)"},
-        {"step_size": 1.0, "seed": 44, "label": "Replica 3 (step=1.0)"}
+        {"step_size": step_size, "seed": 42, "label": f"GMM with {n_modes} modes"}
     ]
     
     # Run sampling for each replica
@@ -217,7 +253,7 @@ def main():
         post_burnin_samples_list.append(post_burnin_samples)
         replica_labels.append(config["label"])
     
-    # Create side-by-side contour plots with samples from all replicas
+    # Create contour plot with samples
     fig = plot_gmm_contours_side_by_side(
         gmm=gmm,
         samples_list=post_burnin_samples_list,
@@ -226,7 +262,9 @@ def main():
     )
     
     # Save the plot
-    fig.savefig("gmm_visualizations/gmm_contours_side_by_side.png", dpi=300)
+    output_path = "gmm_visualizations/gmm_contours_from_config.png"
+    fig.savefig(output_path, dpi=300)
+    print(f"Plot saved to {output_path}")
     
     # Display the plot
     plt.show()
