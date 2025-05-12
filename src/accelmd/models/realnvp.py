@@ -53,25 +53,33 @@ class _RealNVPCoupling(nn.Module):
 
 
 class RealNVPFlow(nn.Module):
-    """A minimal RealNVP implementation tailored to 2-D data.
+    """A minimal RealNVP implementation tailored to 2-D data by default.
 
     Args:
         n_couplings (int): Number of coupling layers (>=2 recommended).
         hidden_dim  (int): Hidden units of the *s* and *t* subnetworks.
         use_permutation (bool): Whether to use coordinate permutation between blocks.
+        dim (int): Dimensionality of input/output (defaults to 2).
     """
 
-    def __init__(self, n_couplings: int = 14, hidden_dim: int = 256, use_permutation: bool = True):
+    def __init__(self, n_couplings: int = 14, hidden_dim: int = 256, 
+                use_permutation: bool = True, dim: int = 2):
         super().__init__()
-        self.dim = 2  # fixed for current task
+        self.dim = dim  # Can be configured, defaults to 2
         self.use_permutation = use_permutation
 
-        # Alternating binary masks [1,0] and [0,1]
+        # Alternating binary masks for arbitrary dimension
         masks = []
-        base_mask = torch.tensor([1.0, 0.0])
         for k in range(n_couplings):
-            masks.append(base_mask.clone())
-            base_mask = 1.0 - base_mask  # flip bits
+            # Create alternating mask patterns
+            # Even indices: first half of dimensions is 1, second half is 0
+            # Odd indices: first half of dimensions is 0, second half is 1
+            mask = torch.zeros(dim)
+            if k % 2 == 0:
+                mask[:dim//2] = 1.0
+            else:
+                mask[dim//2:] = 1.0
+            masks.append(mask)
 
         self.couplings = nn.ModuleList([
             _RealNVPCoupling(mask, hidden_dim) for mask in masks
@@ -97,8 +105,14 @@ class RealNVPFlow(nn.Module):
             
             # Add coordinate permutation after every 2 coupling layers (except last)
             if self.use_permutation and i % 2 == 1 and i < len(self.couplings) - 1:
-                # Simple coordinate swap: [x, y] -> [y, x]
-                z = torch.stack([z[:, 1], z[:, 0]], dim=1)
+                # Generalized coordinate permutation for arbitrary dimensions
+                if self.dim == 2:
+                    # Special case for 2D: simple swap
+                    z = torch.stack([z[:, 1], z[:, 0]], dim=1)
+                else:
+                    # For higher dimensions, reverse the order
+                    indices = torch.arange(z.size(1)-1, -1, -1)
+                    z = z[:, indices]
         
         return z, logdet
 
@@ -115,8 +129,14 @@ class RealNVPFlow(nn.Module):
             
             # If we just passed a permutation point (every 2 layers), apply the swap
             if self.use_permutation and rev_idx % 2 == 0 and rev_idx > 0:
-                # Inverse of coordinate swap is the same operation
-                x = torch.stack([x[:, 1], x[:, 0]], dim=1)
+                # Inverse permutation (same as forward for reversals)
+                if self.dim == 2:
+                    # Special case for 2D: simple swap
+                    x = torch.stack([x[:, 1], x[:, 0]], dim=1)
+                else:
+                    # For higher dimensions, reverse the order
+                    indices = torch.arange(x.size(1)-1, -1, -1)
+                    x = x[:, indices]
             
             # Apply coupling layer
             c = self.couplings[rev_idx]
@@ -148,4 +168,12 @@ def create_realnvp_flow(config: dict | None = None):
     n_couplings = int(config.get("n_couplings", 14))
     hidden_dim = int(config.get("hidden_dim", 256))
     use_permutation = bool(config.get("use_permutation", True))
-    return RealNVPFlow(n_couplings=n_couplings, hidden_dim=hidden_dim, use_permutation=use_permutation) 
+    # Get dimension from config, default to 2
+    dim = int(config.get("dim", 2))
+    
+    return RealNVPFlow(
+        n_couplings=n_couplings, 
+        hidden_dim=hidden_dim, 
+        use_permutation=use_permutation,
+        dim=dim
+    ) 

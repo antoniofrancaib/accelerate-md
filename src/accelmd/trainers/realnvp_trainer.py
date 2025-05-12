@@ -40,92 +40,67 @@ def train_realnvp(config, visualize=False, config_paths=None):
     logger.info(f"Using device: {device}")
     
     # Setup directories
-    model_dir = Path(config.get('model_dir', 'checkpoints/realnvp_5modes'))
-    plot_dir = Path(config.get('plot_dir', 'plots/realnvp_5modes'))
+    model_dir = Path(config.get('model_dir', 'checkpoints/realnvp'))
+    plot_dir = Path(config.get('plot_dir', 'plots/realnvp'))
+    # Check training.model_dir for backward compatibility
+    if 'training' in config and 'model_dir' in config['training']:
+        model_dir = Path(config['training']['model_dir'])
     model_dir.mkdir(exist_ok=True, parents=True)
     if visualize:
         plot_dir.mkdir(exist_ok=True, parents=True)
-    
-    # Force 5-mode GMM regardless of config
-    gmm_config = config['gmm'].copy() 
-    gmm_config['n_mixes'] = 5  # Set to 5 modes
-    # Set a smaller loc_scaling to place modes closer together
-    gmm_config['loc_scaling'] = 0.5  # Smaller scaling to tighten the clusters
     
     # Create GMM from config (only used at T=1)
     # Import locally to avoid circular imports
     from main.targets.gmm import GMM
     
+    gmm_config = config.get('gmm', {})
+    
+    # Setup GMM with configured dimensions and mixtures
     gmm = GMM(
-        dim=gmm_config['dim'],
-        n_mixes=gmm_config['n_mixes'],
-        loc_scaling=gmm_config['loc_scaling'],
+        dim=gmm_config.get('dim', 2),
+        n_mixes=gmm_config.get('n_mixes', 5),
+        loc_scaling=gmm_config.get('loc_scaling', 0.5),
         device=device
     )
     
-    # Override the GMM locations with 5 modes in an ASYMMETRIC pattern
-    # This makes the 5 modes visually distinct
+    # Always apply custom configuration from the config file
     with torch.no_grad():
-        # Create asymmetric mode locations deliberately
-        # No longer in a perfect circle - varying distances and angles
-        locs = torch.zeros((5, 2), device=device)
-        
-        # Mode 1 - upper right
-        locs[0, 0] = 2.5
-        locs[0, 1] = 1.7
-        
-        # Mode 2 - upper left
-        locs[1, 0] = -1.8
-        locs[1, 1] = 2.0
-        
-        # Mode 3 - lower left
-        locs[2, 0] = -2.0
-        locs[2, 1] = -1.5
-        
-        # Mode 4 - lower right
-        locs[3, 0] = 1.4
-        locs[3, 1] = -2.2
-        
-        # Mode 5 - center (slightly offset)
-        locs[4, 0] = 0.5
-        locs[4, 1] = -0.3
-        
-        # Update the GMM's locations
-        gmm.locs.copy_(locs)
-        
-        # Make the covariance matrices different for each mode to create asymmetry
-        scale_trils = torch.zeros(5, 2, 2, device=device)
-        
-        # Mode 1 - narrow and elongated horizontally
-        scale_trils[0, 0, 0] = 0.3
-        scale_trils[0, 1, 1] = 0.2
-        
-        # Mode 2 - wider and elongated vertically
-        scale_trils[1, 0, 0] = 0.3
-        scale_trils[1, 1, 1] = 0.5
-        
-        # Mode 3 - small and circular
-        scale_trils[2, 0, 0] = 0.2
-        scale_trils[2, 1, 1] = 0.2
-        
-        # Mode 4 - large and circular
-        scale_trils[3, 0, 0] = 0.4
-        scale_trils[3, 1, 1] = 0.4
-        
-        # Mode 5 - medium and elongated diagonally
-        scale_trils[4, 0, 0] = 0.3
-        scale_trils[4, 1, 0] = 0.1  # off-diagonal term
-        scale_trils[4, 1, 1] = 0.3
-        
-        # Update the GMM's scale matrices - this gives us differently shaped modes
-        gmm.scale_trils.copy_(scale_trils)
-        
-        # Set up 5 asymmetric modes as before
-        # But make all weights more balanced to avoid missing modes
-        # Update weights to be more balanced - make sure no mode has too small a weight
-        gmm.cat_probs.copy_(torch.tensor([0.22, 0.18, 0.20, 0.22, 0.18], device=device))
-        
-    logger.info(f"Set up GMM with 5 asymmetric modes with varying shapes and balanced weights")
+        # Apply custom locations if provided
+        if 'locations' in gmm_config:
+            custom_locs = torch.tensor(gmm_config['locations'], device=device)
+            gmm.locs.copy_(custom_locs)
+            logger.info(f"Applied {len(gmm_config['locations'])} custom locations to GMM")
+            
+        # Apply custom scales if provided
+        if 'scales' in gmm_config:
+            custom_scales = torch.tensor(gmm_config['scales'], device=device)
+            gmm.scale_trils.copy_(custom_scales)
+            logger.info(f"Applied {len(gmm_config['scales'])} custom scales to GMM")
+            
+        # Apply custom weights if provided
+        if 'weights' in gmm_config:
+            custom_weights = torch.tensor(gmm_config['weights'], device=device)
+            gmm.cat_probs.copy_(custom_weights)
+            logger.info(f"Applied custom weights to GMM: {custom_weights}")
+    
+    # Get temperature settings from config
+    # First check temperature section, then training section (for backwards compatibility)
+    temp_config = config.get('temperature', {})
+    if not temp_config:
+        # For backward compatibility
+        if 'pt' in config:
+            temp_config = config['pt']
+        elif 'training' in config:
+            temp_config = config['training']
+    
+    temp_high = temp_config.get('temp_high', 10.0)
+    temp_low = temp_config.get('temp_low', 1.0)
+    
+    # Get temperature scaling method (default to "sqrt")
+    temp_scaling_method = temp_config.get('scaling_method', 'sqrt')
+    
+    logger.info(f"Using temperature scaling method: {temp_scaling_method}")
+    logger.info(f"Set up GMM with {gmm.locs.shape[0]} modes for mapping from T={temp_high} to T={temp_low}")
     
     # Create RealNVP model
     from src.models.realnvp import create_realnvp_flow
@@ -145,10 +120,6 @@ def train_realnvp(config, visualize=False, config_paths=None):
     n_samples = train_config.get('n_samples', 50000)
     val_split = train_config.get('val_split', 0.1)
     patience = train_config.get('patience', 30)  # Increased patience for better convergence
-    
-    # Temperature settings
-    temp_high = train_config.get('temp_high', 10.0)
-    temp_low = train_config.get('temp_low', 1.0)
     
     seed = train_config.get('seed', 42)
     
@@ -171,6 +142,9 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 logger.warning(f"Error loading wandb config: {e}")
         
         # Initialize wandb with loaded config
+        n_modes = gmm.locs.shape[0]  # Get actual number of modes
+        run_name = f"realnvp_{n_modes}modes_T{temp_high}_to_T{temp_low}"
+        
         wandb_init_args = {
             "project": wandb_config.get("project", "temp-realnvp"),
             "entity": wandb_config.get("entity", None),
@@ -182,11 +156,11 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 "n_samples": n_samples,
                 "model_type": "RealNVP",
                 "mapping": "high_to_low",
-                "n_modes": 5,  # Add info about 5 modes
+                "n_modes": n_modes,
             },
-            "name": f"realnvp_5modes_T{temp_high}_to_T{temp_low}",
+            "name": run_name,
             "group": wandb_config.get("group", None),
-            "tags": wandb_config.get("tags", []) + ["realnvp", f"T{temp_high}-to-T{temp_low}", "5modes"],
+            "tags": wandb_config.get("tags", []) + ["realnvp", f"T{temp_high}-to-T{temp_low}", f"{n_modes}modes"],
             "mode": "offline" if wandb_config.get("offline", True) else "online"
         }
         
@@ -209,7 +183,14 @@ def train_realnvp(config, visualize=False, config_paths=None):
     # Create dataset and dataloader with tempered pairs
     from src.data.tempered_gmm import TemperedGMMPairDataset
     
-    dataset = TemperedGMMPairDataset(gmm, n_samples, temp_high=temp_high, temp_low=temp_low)
+    # Create the dataset with the temperature scaling method
+    dataset = TemperedGMMPairDataset(
+        gmm, 
+        n_samples, 
+        temp_high=temp_high, 
+        temp_low=temp_low,
+        temp_scaling_method=temp_scaling_method
+    )
     
     # Split into training and validation
     val_size = int(len(dataset) * val_split)
@@ -360,7 +341,8 @@ def train_realnvp(config, visualize=False, config_paths=None):
             early_stop_counter = 0
             
             # Save model
-            model_path = model_dir / "realnvp_5modes_best.pt"
+            n_modes = gmm.locs.shape[0]
+            model_path = model_dir / f"realnvp_{n_modes}modes_best.pt"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': flow.state_dict(),
@@ -370,7 +352,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
                 'config': config,
                 'temp_high': temp_high,
                 'temp_low': temp_low,
-                'n_modes': 5
+                'n_modes': n_modes
             }, model_path)
             
             logger.info(f"Saved best model at epoch {epoch+1} with val_loss={val_loss:.4f}")
@@ -391,7 +373,8 @@ def train_realnvp(config, visualize=False, config_paths=None):
             break
     
     # Load best model for final evaluation
-    best_model_path = model_dir / "realnvp_5modes_best.pt"
+    n_modes = gmm.locs.shape[0]
+    best_model_path = model_dir / f"realnvp_{n_modes}modes_best.pt"
     checkpoint = torch.load(best_model_path)
     flow.load_state_dict(checkpoint['model_state_dict'])
     
@@ -416,7 +399,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
         wandb.run.summary["best_epoch"] = best_epoch
         wandb.finish()
     
-    return flow 
+    return flow
 
 # Add CLI interface for direct execution
 if __name__ == "__main__":
@@ -435,27 +418,27 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, action="append",
                         default=[
                             "configs/pt/gmm.yaml",
-                            "configs/pt/flow_training.yaml",
+                            "configs/pt/realnvp.yaml",
                         ],
                         help="Path(s) to YAML configuration file(s). Can be provided multiple times.")
-    parser.add_argument("--model-dir", type=str, default="checkpoints/realnvp_5modes",
-                        help="Directory to save model checkpoints")
-    parser.add_argument("--plot-dir", type=str, default="plots/realnvp_5modes",
-                        help="Directory to save plots")
+    parser.add_argument("--model-dir", type=str, default=None,
+                        help="Directory to save model checkpoints (overrides config)")
+    parser.add_argument("--plot-dir", type=str, default=None,
+                        help="Directory to save plots (overrides config)")
     parser.add_argument("--n-epochs", type=int, default=None,
-                        help="Number of epochs to train")
+                        help="Number of epochs to train (overrides config)")
     parser.add_argument("--batch-size", type=int, default=None,
-                        help="Batch size for training")
+                        help="Batch size for training (overrides config)")
     parser.add_argument("--learning-rate", type=float, default=None,
-                        help="Learning rate for Adam optimizer")
-    parser.add_argument("--n-samples", type=int, default=50000,
-                        help="Number of samples to generate from GMM")
+                        help="Learning rate for Adam optimizer (overrides config)")
+    parser.add_argument("--n-samples", type=int, default=None,
+                        help="Number of samples to generate from GMM (overrides config)")
     parser.add_argument("--temp-high", type=float, default=None,
-                        help="High temperature for the mapping")
+                        help="High temperature for the mapping (overrides config)")
     parser.add_argument("--temp-low", type=float, default=None,
-                        help="Low temperature for the mapping (usually 1.0)")
+                        help="Low temperature for the mapping (overrides config)")
     parser.add_argument("--seed", type=int, default=None,
-                        help="Random seed for reproducibility")
+                        help="Random seed for reproducibility (overrides config)")
     parser.add_argument("--visualize", action="store_true",
                         help="Generate visualizations during training")
     parser.add_argument("--debug", action="store_true",
@@ -495,9 +478,11 @@ if __name__ == "__main__":
     if args.cpu:
         config['device'] = 'cpu'
     
-    # Override with command-line arguments
-    config['model_dir'] = args.model_dir
-    config['plot_dir'] = args.plot_dir
+    # Override with command-line arguments - only if they're provided
+    if args.model_dir:
+        config['model_dir'] = args.model_dir
+    if args.plot_dir:
+        config['plot_dir'] = args.plot_dir
     
     if 'training' not in config:
         config['training'] = {}
@@ -510,17 +495,28 @@ if __name__ == "__main__":
         config['training']['learning_rate'] = args.learning_rate
     if args.n_samples:
         config['training']['n_samples'] = args.n_samples
-    if args.temp_high:
-        config['training']['temp_high'] = args.temp_high
-    if args.temp_low:
-        config['training']['temp_low'] = args.temp_low
     if args.seed:
         config['training']['seed'] = args.seed
+    
+    # Temperature settings may be in different places in the config
+    if 'temperature' not in config:
+        config['temperature'] = {}
+    
+    if args.temp_high:
+        config['temperature']['temp_high'] = args.temp_high
+        # For backward compatibility with old configs
+        if 'pt' in config:
+            config['pt']['temp_high'] = args.temp_high
+    if args.temp_low:
+        config['temperature']['temp_low'] = args.temp_low
+        # For backward compatibility with old configs
+        if 'pt' in config:
+            config['pt']['temp_low'] = args.temp_low
     
     # Set wandb mode based on argument (only if wandb is available)
     config['wandb'] = args.wandb and wandb_available
     
     # Train the model
-    logger.info("Starting temperature-mapping RealNVP training for 5-mode GMM...")
+    logger.info(f"Starting temperature-mapping RealNVP training...")
     flow = train_realnvp(config, visualize=args.visualize, config_paths=config_paths)
-    logger.info("RealNVP training for 5-mode GMM completed!") 
+    logger.info("RealNVP training completed!") 

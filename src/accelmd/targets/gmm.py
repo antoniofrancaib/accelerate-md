@@ -44,6 +44,44 @@ class GMM(torch.nn.Module, TargetDistribution):
                                                      component_distribution=com,
                                                      validate_args=False)
     
+    def tempered_version(self, temperature=1.0, scaling_method='sqrt'):
+        """
+        Create a tempered version of this GMM distribution at the specified temperature.
+        
+        Args:
+            temperature (float): Temperature for scaling (default: 1.0)
+            scaling_method (str): Method for scaling covariance with temperature
+                                 'sqrt' - Scale by sqrt(temperature) (more theoretically correct for GMMs)
+                                 'linear' - Scale directly by temperature
+        
+        Returns:
+            A PyTorch distribution representing the tempered GMM
+        """
+        with torch.no_grad():
+            # Scale the covariance according to the specified method
+            if scaling_method == 'sqrt':
+                # Sqrt scaling is more theoretically correct for GMMs
+                scaled_scale_trils = torch.sqrt(torch.tensor(temperature)) * self.scale_trils
+            elif scaling_method == 'linear':
+                # Linear scaling directly scales variance by temperature
+                scaled_scale_trils = torch.tensor(temperature) * self.scale_trils
+            else:
+                print(f"Warning: Unknown scaling method '{scaling_method}', defaulting to 'sqrt'")
+                scaled_scale_trils = torch.sqrt(torch.tensor(temperature)) * self.scale_trils
+            
+            # Create the tempered distribution
+            mix = torch.distributions.Categorical(self.cat_probs.to(self.device))
+            comp = torch.distributions.MultivariateNormal(
+                loc=self.locs.to(self.device),
+                scale_tril=scaled_scale_trils.to(self.device),
+                validate_args=False
+            )
+            return torch.distributions.MixtureSameFamily(
+                mixture_distribution=mix,
+                component_distribution=comp,
+                validate_args=False
+            )
+    
     @property
     def test_set(self) -> torch.Tensor:
         return self.sample((self.n_test_set_samples, ))

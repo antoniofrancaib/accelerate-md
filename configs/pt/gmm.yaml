@@ -7,29 +7,60 @@ device: "cuda"
 # ------------------------------------------------------------------
 # GMM target distribution parameters
 gmm:
-  dim:        2       # dimensionality of each sample
-  n_mixes:    5       # number of Gaussian components
-  loc_scaling: 2.0    # scale factor for component means
+  dim: 2                    # dimensionality of each sample
+  n_mixes: 5                # number of Gaussian components
+  loc_scaling: 0.5          # scale factor for component means - smaller value tightens clusters
+  
+  # Custom mode configuration (these will be used by default)
+  # The exact same settings from the original hardcoded values
+  locations:
+    - [2.5, 1.7]            # Mode 1 - upper right
+    - [-1.8, 2.0]           # Mode 2 - upper left
+    - [-2.0, -1.5]          # Mode 3 - lower left
+    - [1.4, -2.2]           # Mode 4 - lower right
+    - [0.5, -0.3]           # Mode 5 - center (slightly offset)
+  
+  # Custom scale_tril values for covariance matrices
+  scales:
+    # Mode 1 - narrow and elongated horizontally
+    - [[0.3, 0.0], [0.0, 0.2]]
+    # Mode 2 - wider and elongated vertically  
+    - [[0.3, 0.0], [0.0, 0.5]]
+    # Mode 3 - small and circular
+    - [[0.2, 0.0], [0.0, 0.2]]
+    # Mode 4 - large and circular
+    - [[0.4, 0.0], [0.0, 0.4]]
+    # Mode 5 - medium and elongated diagonally
+    - [[0.3, 0.0], [0.1, 0.3]]
+  
+  # Custom mixture weights
+  weights: [0.22, 0.18, 0.20, 0.22, 0.18]
+
+# ------------------------------------------------------------------
+# Temperature parameters
+temperature:
+  temp_low: 1.0             # lowest temperature
+  temp_high: 10.0           # highest temperature
+  scaling_method: "sqrt"    # "sqrt" or "linear" scaling
 
 # ------------------------------------------------------------------
 # Parallel Tempering (PT) settings
 pt:
-  temp_low:        1.0      # lowest temperature T₁
-  temp_high:       100.0    # highest temperature Tₖ
-  total_n_temp:    10       # number of replicas K 
-  temp_schedule:   "geom"   # "geom" or "linear" spacing of temperatures
-  num_chains:      1        # number of chains per replica
-  num_steps:       100000   # total MCMC iterations (L)
-  burn_in:         1000     # discard first 1 000 steps
-  swap_interval:   100      # attempt replica exchange every 100 steps
-  check_interval:  1000     # for logging/plotting frequency
-  step_size:       0.0001   # MCMC step‐size ε
-  # thinning:      1000      # optional: keep one sample every 1000 steps
+  temp_low: 1.0             # lowest temperature T₁
+  temp_high: 100.0          # highest temperature Tₖ
+  total_n_temp: 10          # number of replicas K 
+  temp_schedule: "geom"     # "geom" or "linear" spacing of temperatures
+  num_chains: 1             # number of chains per replica
+  num_steps: 100000         # total MCMC iterations (L)
+  burn_in: 1000             # discard first 1 000 steps
+  swap_interval: 100        # attempt replica exchange every 100 steps
+  check_interval: 1000      # for logging/plotting frequency
+  step_size: 0.0001         # MCMC step‐size ε
 
 # ------------------------------------------------------------------
 # I/O & plotting
 io:
-  plot_fold:           "plots/pt"
-  save_fold:           "data/pt"
+  plot_fold: "plots/pt"
+  save_fold: "datasets/pt"
   num_samples_to_plot: 10000
   num_samples_for_eval: 10000

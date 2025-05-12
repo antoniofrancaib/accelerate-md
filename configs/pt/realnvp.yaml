@@ -22,12 +22,16 @@ training:
   eta_min_factor: 0.05      # Minimum LR will be this fraction of target LR
   
   # I/O
-  model_dir: "models"       # Directory to save model checkpoints
+  model_dir: "checkpoints"  # Directory to save model checkpoints
 
 # Model architecture parameters
 model:
+  dim: 2                    # Input/output dimension (should match GMM dimension)
   hidden_dim: 256           # Hidden dimension for coupling networks
   n_couplings: 14           # Number of coupling layers 
   use_permutation: true     # Whether to use coordinate permutation between blocks
   patch_size: 1             # Size of patches (typically 1 for 2D data)
   use_nvp: true             # Whether to use affine coupling 
+
+# Configuration for plots and visualizations
+plot_dir: "plots/realnvp"    # Directory to save plots 
