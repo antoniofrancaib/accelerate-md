@@ -40,7 +40,7 @@ def train_realnvp(config, visualize=False, config_paths=None):
     logger.info(f"Using device: {device}")
     
     # Setup directories
-    model_dir = Path(config.get('model_dir', 'models/realnvp_5modes'))
+    model_dir = Path(config.get('model_dir', 'checkpoints/realnvp_5modes'))
     plot_dir = Path(config.get('plot_dir', 'plots/realnvp_5modes'))
     model_dir.mkdir(exist_ok=True, parents=True)
     if visualize:
@@ -438,7 +438,7 @@ if __name__ == "__main__":
                             "configs/pt/flow_training.yaml",
                         ],
                         help="Path(s) to YAML configuration file(s). Can be provided multiple times.")
-    parser.add_argument("--model-dir", type=str, default="models/realnvp_5modes",
+    parser.add_argument("--model-dir", type=str, default="checkpoints/realnvp_5modes",
                         help="Directory to save model checkpoints")
     parser.add_argument("--plot-dir", type=str, default="plots/realnvp_5modes",
                         help="Directory to save plots")
