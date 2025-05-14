@@ -46,7 +46,7 @@ CONFIG="configs/pt/gmm.yaml"
 nvidia-smi
 
 # Command to run the full pipeline (train flows + evaluate swap)
-CMD="python -u runner.py run-all --config $CONFIG"
+CMD="python -u runner.py run-all --config $CONFIG --wandb"
 
 echo "============================================="
 echo "Starting GMM experiment with RealNVP flows"
