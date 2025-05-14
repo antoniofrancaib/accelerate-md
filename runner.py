@@ -30,8 +30,33 @@ def _run_train_flows(cfg_path: str, enable_wandb: bool = False, disable_wandb: b
     logger.info("Flow training finished ✓")
 
 
+def _run_eval_metrics(cfg_path: str, enable_wandb: bool = False, disable_wandb: bool = False):
+    """Run the complete evaluation pipeline including swap rates and additional metrics.
+    
+    This uses the centralized evaluator which:
+    1. First runs gmm_swap_rate to generate base data
+    2. Then processes that data through all metric modules
+    """
+    from src.accelmd.evaluators.evaluator import evaluate
+
+    cfg = load_config(cfg_path)
+    
+    # Handle wandb settings
+    if enable_wandb:
+        cfg["wandb"] = True
+    if disable_wandb:
+        cfg["wandb"] = False
+        
+    logger.info("Starting full evaluation pipeline …")
+    evaluate(cfg, cfg_path)
+    logger.info("Evaluation pipeline finished ✓")
+
+
 def _run_eval_swap(cfg_path: str, enable_wandb: bool = False, disable_wandb: bool = False):
-    """Run the extreme-swap evaluator."""
+    """Run only the extreme-swap evaluator without additional metrics.
+    
+    For backward compatibility. Consider using eval-metrics instead.
+    """
     from src.accelmd.evaluators.gmm_swap_rate import main as eval_main
 
     cfg = load_config(cfg_path)
@@ -42,9 +67,9 @@ def _run_eval_swap(cfg_path: str, enable_wandb: bool = False, disable_wandb: boo
     if disable_wandb:
         cfg["wandb"] = False
         
-    logger.info("Starting swap-rate evaluation …")
+    logger.info("Starting swap-rate evaluation (basic metrics only) …")
     eval_main(cfg_path)
-    logger.info("Swap-rate evaluation finished ✓")
+    logger.info("Basic swap-rate evaluation finished ✓")
 
 
 def main():
@@ -67,9 +92,19 @@ def main():
     p_train.add_argument("--wandb", action="store_true", help="Enable wandb logging")
     p_train.add_argument("--no-wandb", action="store_true", help="Disable wandb logging even if available")
 
-    # --- eval-swap -----------------------------------------------------------
+    # --- eval-metrics (new, preferred way) -----------------------------------
+    p_eval_full = subparsers.add_parser(
+        "eval-metrics", help="Run complete evaluation with all metrics (swap rates, plots, and stats)"
+    )
+    p_eval_full.add_argument(
+        "--config", type=str, required=True, help="Path to YAML config (e.g. configs/pt/gmm.yaml)"
+    )
+    p_eval_full.add_argument("--wandb", action="store_true", help="Enable wandb logging")
+    p_eval_full.add_argument("--no-wandb", action="store_true", help="Disable wandb logging even if available")
+
+    # --- eval-swap (legacy) --------------------------------------------------
     p_eval = subparsers.add_parser(
-        "eval-swap", help="Evaluate extreme-swap acceptance rates"
+        "eval-swap", help="Evaluate basic extreme-swap acceptance rates only"
     )
     p_eval.add_argument(
         "--config", type=str, required=True, help="Path to YAML config (e.g. configs/pt/gmm.yaml)"
@@ -80,7 +115,7 @@ def main():
     # --- run-all -------------------------------------------------------------
     p_all = subparsers.add_parser(
         "run-all",
-        help="Run both flow training and swap-rate evaluation in sequence",
+        help="Run both flow training and complete evaluation in sequence",
     )
     p_all.add_argument(
         "--config", type=str, required=True, help="Path to YAML config (e.g. configs/pt/gmm.yaml)"
@@ -104,9 +139,12 @@ def main():
         _run_train_flows(cfg_path, enable_wandb, disable_wandb)
     elif args.command == "eval-swap":
         _run_eval_swap(cfg_path, enable_wandb, disable_wandb)
+    elif args.command == "eval-metrics":
+        _run_eval_metrics(cfg_path, enable_wandb, disable_wandb)
     elif args.command == "run-all":
         _run_train_flows(cfg_path, enable_wandb, disable_wandb)
-        _run_eval_swap(cfg_path, enable_wandb, disable_wandb)
+        # Use the full evaluation pipeline for run-all
+        _run_eval_metrics(cfg_path, enable_wandb, disable_wandb)
     else:
         parser.error(f"Unknown command: {args.command}")
 

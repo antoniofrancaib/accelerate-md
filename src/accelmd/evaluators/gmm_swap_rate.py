@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -195,8 +194,6 @@ def main(config_path: str):
 
     # Output directories
     eval_cfg = cfg["evaluator"]
-    plot_dir = Path(eval_cfg["plot_dir"])
-    plot_dir.mkdir(parents=True, exist_ok=True)
     results_dir = Path(eval_cfg["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,36 +252,16 @@ Swap Pair   |  Naive PT  |  Flow-based T-GePT
 """.format(na=naive_rate, fa=flow_rate))
 
     # ------------------------------------------------------------------
-    # 5) Plot acceptance histories
-    # ------------------------------------------------------------------
-    x_axis = np.arange(n_attempts) * swap_interval
-    plt.figure(figsize=(8, 4))
-    plt.step(x_axis, naive_hist, where="post", label="Naive PT", alpha=0.8)
-    plt.step(x_axis, flow_hist, where="post", label="Flow-based T-GePT", alpha=0.8)
-    plt.yticks([0, 1])
-    plt.ylim(-0.05, 1.05)
-    plt.xlabel("Simulation step")
-    plt.ylabel("Swap accepted")
-    plt.title("Extreme-swap acceptance on 2-D GMM")
-    plt.legend()
-    fig_path = plot_dir / "gmm_swap_rate.png"
-    plt.tight_layout()
-    plt.savefig(fig_path, dpi=150)
-    plt.close()
-    logger.info(f"Saved acceptance plot to {fig_path}")
-    
-    # Log plot to wandb
-    if WANDB_AVAILABLE and cfg.get("wandb", False):
-        wandb.log({"swap_acceptance_plot": wandb.Image(str(fig_path))})
-
-    # ------------------------------------------------------------------
-    # 6) JSON summary
+    # 5) JSON summary - simplified to only include rates
     # ------------------------------------------------------------------
     summary = {
-        "naive_hist": naive_hist,
-        "flow_hist": flow_hist,
         "naive_rate": naive_rate,
         "flow_rate": flow_rate,
+        # Histories are stored so that downstream metrics (moving average,
+        # autocorrelation, etc.) can be computed without re-running the
+        # Monte-Carlo experiment.
+        "naive_hist": naive_hist,
+        "flow_hist": flow_hist,
     }
     json_path = results_dir / "gmm_swap_rate.json"
     with open(json_path, "w", encoding="utf-8") as fp:

@@ -3,9 +3,9 @@ import argparse
 import numpy as np
 
 def run_mcmc(config_path):
-    from main.targets.aldp import get_aldp_potential
-    from main.sampler.mcmc_simulator import sample_mcmc_chain
-    from main.sampler.sampler import LangevinDynamics
+    from src.accelmd.targets.aldp import get_aldp_potential
+    from src.accelmd.samplers.simulator import sample_mcmc_chain
+    from src.accelmd.samplers.mcmc.langevin import LangevinDynamics
     import torch
 
     device = "cpu"
