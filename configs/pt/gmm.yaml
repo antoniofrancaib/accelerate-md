@@ -1,59 +1,86 @@
-# configs/pt/gmm.yaml
-
-# General
-name: "gmm"
+# -----------------------------------------------------------------------------
+# Experiment: Extreme‐swap acceptance on 2D GMM + RealNVP flows
+# -----------------------------------------------------------------------------
+name: "gmm_pt_extreme_swap"
 device: "cuda"
 
-# ------------------------------------------------------------------
-# GMM target distribution parameters
+# -----------------------------------------------------------------------------
+# 1) GMM target distribution settings
+# -----------------------------------------------------------------------------
 gmm:
-  dim: 2                    # dimensionality of each sample
-  n_mixes: 5                # number of Gaussian components (changed from 3 to 5)
-  loc_scaling: 1.0          # scale factor for component means
-  
-  locations:
-    - [-2.5,  0.8]   # Mode 1 – upper left
-    - [-0.7,  1.5]   # Mode 2 – upper middle, relatively close to Mode 1
-    - [ 1.2,  0.3]   # Mode 3 – middle right
-    - [ 0.1, -1.7]   # Mode 4 – lower middle
-    - [ 3.0, -1.3]   # Mode 5 – lower right, relatively close to Mode 4
+  dim: 2
+  n_mixes: 5
+  loc_scaling: 1.0
 
-  # Varied covariance matrices for the five modes
+  # Mode centers
+  locations:
+    - [-2.5,  0.8]
+    - [-0.7,  1.5]
+    - [ 1.2,  0.3]
+    - [ 0.1, -1.7]
+    - [ 3.0, -1.3]
+
+  # Covariances (scale_tril)
   scales:
-    - [[0.40, 0.05], [0.05, 0.45]]   # Mode 1 - slightly correlated
-    - [[0.10, 0.0],  [0.0,  0.15]]   # Mode 2 - tighter in x direction
-    - [[0.35, 0.0],  [0.0,  0.35]]   # Mode 3 - symmetric, medium spread
-    - [[0.25, -0.07], [-0.07, 0.18]]  # Mode 4 - negatively correlated, wider
-    - [[0.12, 0.0],  [0.0,  0.25]]   # Mode 5 - stretched in y direction
-  
-  # Custom asymmetric mixture weights for 5 modes
+    - [[0.40,  0.05], [ 0.05, 0.45]]
+    - [[0.10,  0.00], [ 0.00, 0.15]]
+    - [[0.35,  0.00], [ 0.00, 0.35]]
+    - [[0.25, -0.07], [-0.07, 0.18]]
+    - [[0.12,  0.00], [ 0.00, 0.25]]
+
+  # Mixture weights
   weights: [0.2, 0.2, 0.2, 0.2, 0.2]
 
-# ------------------------------------------------------------------
-# Temperature parameters
-temperature:
-  temp_low: 1.0             # lowest temperature
-  temp_high: 10.0           # highest temperature
-  scaling_method: "sqrt"    # "sqrt" or "linear" scaling
-
-# ------------------------------------------------------------------
-# Parallel Tempering (PT) settings
+# -----------------------------------------------------------------------------
+# 2) Parallel Tempering settings (naive & flow‐based share these)
+# -----------------------------------------------------------------------------
 pt:
-  temp_low: 1.0             # lowest temperature T₁
-  temp_high: 100.0          # highest temperature Tₖ
-  total_n_temp: 10          # number of replicas K 
-  temp_schedule: "geom"     # "geom" or "linear" spacing of temperatures
-  num_chains: 1             # number of chains per replica
-  num_steps: 100000         # total MCMC iterations (L)
-  burn_in: 1000             # discard first 1 000 steps
-  swap_interval: 100        # attempt replica exchange every 100 steps
-  check_interval: 1000      # for logging/plotting frequency
-  step_size: 0.0001         # MCMC step‐size ε
+  temp_low: 1.0
+  temp_high: 100.0
+  total_n_temp: 10
+  temp_schedule: "geom"     # "geom" or "linear"
+  num_chains: 1
+  num_steps: 100000
+  burn_in:   1000
+  swap_interval: 100
+  check_interval: 1000
+  step_size: 0.0001
 
-# ------------------------------------------------------------------
-# I/O & plotting
-io:
-  plot_fold: "plots/pt"
-  save_fold: "datasets/pt"
-  num_samples_to_plot: 10000
-  num_samples_for_eval: 10000
+# -----------------------------------------------------------------------------
+# 3) RealNVP trainer parameters
+# -----------------------------------------------------------------------------
+trainer:
+  realnvp:
+    # where to save each temperature‐pair flow
+    checkpoint_dir: "checkpoints/realnvp_gmm"
+
+    # model architecture
+    model:
+      dim:           2
+      hidden_dim:  256
+      n_couplings:  14
+      use_permutation: true
+
+    # optimization
+    training:
+      n_epochs:        100
+      batch_size:      256
+      learning_rate:  3e-4
+      initial_lr:     1e-4
+      max_grad_norm:  5.0
+      warmup_epochs:   5
+      eta_min_factor:  0.05
+      patience:       20
+      val_split:      0.1
+      seed:           42
+
+# -----------------------------------------------------------------------------
+# 4) Evaluation & I/O
+# -----------------------------------------------------------------------------
+evaluator:
+  # where to read the flows you just trained
+  checkpoint_dir: "checkpoints/realnvp_gmm"
+
+  # where to dump plots & summary JSON
+  plot_dir:    "plots/pt"
+  results_dir: "results"

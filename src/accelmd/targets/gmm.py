@@ -4,7 +4,7 @@ from typing import List
 import numpy as np
 import torch
 
-from src.accelmd.targets.base_target import TargetDistribution
+from src.accelmd.targets.base import TargetDistribution
 
 
 class GMM(torch.nn.Module, TargetDistribution):

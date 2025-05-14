@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.accelmd.targets.gmm import GMM
-from src.accelmd.sampler.sampler import LangevinDynamics
+from src.accelmd.samplers.mcmc.base import LangevinDynamics
 from src.accelmd.utils.config import load_config
 
 
