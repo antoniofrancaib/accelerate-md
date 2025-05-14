@@ -27,8 +27,8 @@ training:
 # Model architecture parameters
 model:
   dim: 2                    # Input/output dimension (should match GMM dimension)
-  hidden_dim: 256           # Hidden dimension for coupling networks
-  n_couplings: 14           # Number of coupling layers 
+  hidden_dim: 512           # Hidden dimension for coupling networks
+  n_couplings: 20           # Number of coupling layers 
   use_permutation: true     # Whether to use coordinate permutation between blocks
   patch_size: 1             # Size of patches (typically 1 for 2D data)
   use_nvp: true             # Whether to use affine coupling 
