@@ -215,7 +215,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             best_state = flow.state_dict()
             torch.save(best_state,
                        ckpt_dir /
-                       f"flow_{t_low}_to_{t_high}.pt")
+                       f"flow_{t_low:.2f}_to_{t_high:.2f}.pt")
 
         # early stop
         if best_loss == val_loss:
@@ -227,7 +227,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             break
 
     logger.info(f"Best val loss: {best_loss:.4f}")
-    return ckpt_dir / f"flow_{t_low}_to_{t_high}.pt"
+    return ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
 
 
 # ───────────────────────────────────────────────────

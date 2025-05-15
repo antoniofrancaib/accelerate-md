@@ -13,21 +13,58 @@ logger = logging.getLogger(__name__)
 
 
 def _run_train_flows(cfg_path: str, enable_wandb: bool = False, disable_wandb: bool = False):
-    """Call the RealNVP trainer using a single YAML config file."""
+    """Train a RealNVP flow **for every adjacent temperature pair**.
+
+    The number of models trained is ``total_n_temp - 1`` as defined in the
+    YAML configuration. Each model is trained by cloning the base *cfg* and
+    overriding ``pt.temp_low`` / ``pt.temp_high`` for the specific pair before
+    calling ``train_realnvp``.
+    """
+
+    import copy, numpy as np
     from src.accelmd.trainers.realnvp_trainer import train_realnvp
 
-    cfg = load_config(cfg_path)
-    cfg.setdefault("config_files", [cfg_path])  # track provenance
-    
-    # Handle wandb settings
-    if enable_wandb:
-        cfg["wandb"] = True
-    if disable_wandb:
-        cfg["wandb"] = False
+    base_cfg = load_config(cfg_path)
 
-    logger.info("Starting flow training …")
-    train_realnvp(cfg)
-    logger.info("Flow training finished ✓")
+    # Handle wandb settings globally (each run may still be toggled by cfg)
+    if enable_wandb:
+        base_cfg["wandb"] = True
+    if disable_wandb:
+        base_cfg["wandb"] = False
+
+    # Compute temperature schedule
+    t_low_global, t_high_global = float(base_cfg["pt"]["temp_low"]), float(base_cfg["pt"]["temp_high"])
+    n = int(base_cfg["pt"]["total_n_temp"])
+    schedule_type = base_cfg["pt"].get("temp_schedule", "geom")
+    temps = (
+        np.linspace(t_low_global, t_high_global, n)
+        if schedule_type == "linear"
+        else np.geomspace(t_low_global, t_high_global, n)
+    )
+
+    # Round to 2 decimal places to match checkpoint naming convention
+    temps = [round(float(t), 2) for t in temps]
+
+    logger.info("Training flows for temperature pairs: %s", temps)
+
+    for idx in range(len(temps) - 1):
+        t_low, t_high = float(temps[idx]), float(temps[idx + 1])
+        cfg = copy.deepcopy(base_cfg)
+        cfg.setdefault("config_files", [cfg_path])
+        cfg["pt"]["temp_low"] = t_low
+        cfg["pt"]["temp_high"] = t_high
+
+        logger.info(
+            "[Flow %d/%d] Training RealNVP for T_low=%s → T_high=%s",
+            idx + 1,
+            len(temps) - 1,
+            t_low,
+            t_high,
+        )
+
+        train_realnvp(cfg)
+
+    logger.info("Flow training for all temperature pairs finished ✓")
 
 
 def _run_eval_metrics(cfg_path: str, enable_wandb: bool = False, disable_wandb: bool = False):
@@ -48,7 +85,7 @@ def _run_eval_metrics(cfg_path: str, enable_wandb: bool = False, disable_wandb: 
         cfg["wandb"] = False
         
     logger.info("Starting full evaluation pipeline …")
-    evaluate(cfg, cfg_path)
+    evaluate(cfg)
     logger.info("Evaluation pipeline finished ✓")
 
 

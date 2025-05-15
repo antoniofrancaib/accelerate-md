@@ -34,6 +34,8 @@ try:
 except ImportError:  # pragma: no cover
     _WANDB_AVAILABLE = False
 
+from src.accelmd.evaluators.gmm_swap_rate import _pair_suffix
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,9 +43,10 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_histories(results_dir: Path) -> tuple[List[int], List[int]]:
-    """Load *naive_hist* and *flow_hist* lists from results JSON."""
-    json_path = results_dir / "gmm_swap_rate.json"
+def _load_histories(results_dir: Path, t_low: float, t_high: float) -> tuple[List[int], List[int]]:
+    """Load histories for a specific temperature pair."""
+    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
+    json_path = results_dir / json_name
     if not json_path.is_file():
         raise FileNotFoundError(
             f"Results JSON '{json_path}' not found. Run swap-rate evaluation first."
@@ -86,7 +89,8 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # 1) Load data
     # ------------------------------------------------------------------
     results_dir = Path(cfg["evaluator"]["results_dir"])
-    naive_hist, flow_hist = _load_histories(results_dir)
+    t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
+    naive_hist, flow_hist = _load_histories(results_dir, t_low, t_high)
 
     swap_interval = int(cfg["pt"].get("swap_interval", 100))
     # Calculate window size with a sensible maximum (not more than 25% of data length)
@@ -126,7 +130,7 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
 
     plot_dir = Path(cfg["evaluator"]["plot_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plot_dir / "moving_average_acceptance.png"
+    out_path = plot_dir / f"moving_average_acceptance_{_pair_suffix(t_low, t_high)}.png"
     plt.savefig(out_path, dpi=200)
     logger.info("Moving-average plot saved to %s", out_path)
 
@@ -134,7 +138,13 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # 3) Optional wandb logging
     # ------------------------------------------------------------------
     if _WANDB_AVAILABLE and cfg.get("wandb", False):
-        wandb.log({"moving_average_acceptance": wandb.Image(str(out_path))})
-        logger.debug("Logged moving-average acceptance figure to wandb.")
+        try:
+            if wandb.run is not None:
+                wandb.log({"moving_average_acceptance": wandb.Image(str(out_path))})
+                logger.debug("Logged moving-average acceptance figure to wandb.")
+            else:
+                logger.warning("No active wandb run found. Skipping wandb logging.")
+        except Exception as e:
+            logger.warning(f"Error logging to wandb: {e}")
 
     plt.close()

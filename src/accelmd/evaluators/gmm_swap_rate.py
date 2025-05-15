@@ -30,6 +30,14 @@ def _init_wandb(cfg: Dict[str, Any]) -> None:
     if not (WANDB_AVAILABLE and cfg.get("wandb", False)):
         return
     
+    # Check if an existing run is active (can happen in a loop)
+    if WANDB_AVAILABLE and wandb.run is not None:
+        # If we're in a run already (e.g., from previous pairs), finish it
+        try:
+            wandb.finish()
+        except Exception as e:
+            logger.warning(f"Error finishing previous wandb run: {e}")
+    
     # Get GMM config for logging
     gmm_cfg = cfg.get("gmm", {})
     pt_cfg = cfg.get("pt", {})
@@ -80,25 +88,66 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     pt_cfg = cfg["pt"]
-    t_low, t_high = pt_cfg["temp_low"], pt_cfg["temp_high"]
+    t_low, t_high = float(pt_cfg["temp_low"]), float(pt_cfg["temp_high"])
+    
+    # Round to 2 decimals for file matching
+    t_low_rounded = round(t_low, 2)
+    t_high_rounded = round(t_high, 2)
 
-    # Candidate 1 – spec-compliant name
-    candidates: List[Path] = [
-        ckpt_dir / f"flow_{t_low}_to_{t_high}.pt",
-    ]
-    # Candidate 2 – trainer's current naming scheme
+    # List possible candidates from most specific to least specific
+    candidates: List[Path] = []
+    
+    # Candidate 1: Exact 2 decimal format (new format)
+    candidates.append(ckpt_dir / f"flow_{t_low_rounded:.2f}_to_{t_high_rounded:.2f}.pt")
+    
+    # Candidate 2: Try just the rounded values without format specifier
+    candidates.append(ckpt_dir / f"flow_{t_low_rounded}_to_{t_high_rounded}.pt")
+    
+    # Candidate 3: Historical format with full precision
+    candidates.append(ckpt_dir / f"flow_{t_low}_to_{t_high}.pt")
+    
+    # Candidate 4: Generic fallback
     n_modes = gmm.locs.shape[0]
     candidates.append(ckpt_dir / f"realnvp_{n_modes}modes_best.pt")
-
+    
+    # Try direct matches first
     ckpt_path: Path | None = None
     for cand in candidates:
         if cand.is_file():
             ckpt_path = cand
+            logger.info(f"Found exact checkpoint match: {cand}")
             break
+            
+    # If no exact match, try glob patterns
+    if ckpt_path is None:
+        # Try search by pattern - look for any checkpoints with approximately the right temps
+        # Truncate to one decimal to widen the search
+        t_low_trunc = int(t_low_rounded * 10) / 10
+        t_high_trunc = int(t_high_rounded * 10) / 10
+        
+        patterns = [
+            f"flow_{t_low_trunc}*_to_{t_high_trunc}*.pt",  # e.g. flow_1.0*_to_1.6*.pt
+            f"flow_{t_low_rounded}_to_{t_high_rounded}.pt", # Exact rounded match
+            "flow_*_to_*.pt"  # Any flow file as a last resort
+        ]
+        
+        logger.info(f"No exact match found. Trying pattern search for t_low={t_low_rounded}, t_high={t_high_rounded}")
+        
+        for pattern in patterns:
+            matches = list(ckpt_dir.glob(pattern))
+            if matches:
+                # Sort by specificity - shorter filenames are preferred as they likely have fewer decimal places
+                matches.sort(key=lambda p: len(p.name))
+                ckpt_path = matches[0]
+                logger.info(f"Found pattern match {pattern}: {ckpt_path}")
+                break
+
     if ckpt_path is None:
         raise FileNotFoundError(
-            f"Could not find a RealNVP checkpoint in {ckpt_dir}. Tried: {', '.join(str(c) for c in candidates)}"
+            f"Could not find a RealNVP checkpoint in {ckpt_dir}. Tried patterns including: "
+            f"flow_{t_low_rounded:.2f}_to_{t_high_rounded:.2f}.pt and broader patterns."
         )
+    
     logger.info(f"Loading RealNVP weights from {ckpt_path}")
 
     # Model architecture comes from trainer-section of config
@@ -170,12 +219,54 @@ def _compute_acceptance_flow(
     return bool(accept.item())
 
 
-def main(config_path: str):
-    """Run GMM extreme-swap experiment and report acceptance rates."""
+# ──────────────────────────────────────────────────────────────────
+# Helper to format temperatures for filenames
+# ──────────────────────────────────────────────────────────────────
+
+def _fmt_temp(t: float) -> str:
+    """Format temperature *t* for use in file names (strip trailing zeros)."""
+    s = f"{t:.8g}"  # 8 significant digits is plenty
+    return s.replace('.', 'p')  # replace dot with 'p' to avoid filesystem issues
+
+
+# ------------------------------------------------------------------
+# New: unified helper to build identifier matching checkpoint names
+# ------------------------------------------------------------------
+
+
+def _pair_suffix(t_low: float, t_high: float) -> str:
+    """Return filename-safe suffix *including* the ``flow_`` prefix.
+
+    Examples
+    --------
+    >>> _pair_suffix(1.0, 1.6681005)
+    'flow_1.00_to_1.67'
+
+    The raw ``str`` representation is used to mirror exactly the checkpoint
+    names created by ``train_realnvp`` such that post-processing outputs can
+    simply prepend their own descriptor (e.g. ``moving_average_acceptance``)
+    while sharing the same pair identifier.
+    """
+    return f"flow_{t_low:.2f}_to_{t_high:.2f}"
+
+
+# ──────────────────────────────────────────────────────────────────
+# Public *run* API (dict-based) – preferred for programmatic use
+# ──────────────────────────────────────────────────────────────────
+
+
+def run(cfg: dict) -> None:  # noqa: D401 – imperative API
+    """Run GMM extreme-swap experiment using an in-memory *cfg* dictionary.
+
+    This is the function to call from other Python modules. The old
+    ``main(config_path)`` remains for CLI compatibility and simply calls this
+    helper after loading the YAML file.
+    """
+
     # ------------------------------------------------------------------
-    # 1) Load config & set up directories
+    # 1) Load config & set up directories (cfg already loaded by caller)
     # ------------------------------------------------------------------
-    cfg = load_config(config_path)
+    # cfg is already provided
 
     # Initialize wandb if enabled
     _init_wandb(cfg)
@@ -214,7 +305,6 @@ def main(config_path: str):
 
     for _ in range(n_attempts):
         # Draw *fresh* samples from each tempered distribution to mimic well-mixed PT chains
-        # Add explicit batch dimension [1, 2] instead of just [2]
         x_low = gmm.sample((1,)).to(device)
         x_high = hi_gmm.sample((1,)).to(device)
 
@@ -245,38 +335,48 @@ def main(config_path: str):
     # ------------------------------------------------------------------
     # 4) Pretty print table
     # ------------------------------------------------------------------
-    print("""
+    print(
+        """
 Swap Pair   |  Naive PT  |  Flow-based T-GePT
-------------|------------|-----------------
-(T₁↔Tₖ)      |   {na:.2f}     |      {fa:.2f}
-""".format(na=naive_rate, fa=flow_rate))
++------------|------------|-----------------
++(T₁↔Tₖ)      |   {na:.2f}     |      {fa:.2f}
+""".format(na=naive_rate, fa=flow_rate)
+    )
 
     # ------------------------------------------------------------------
-    # 5) JSON summary - simplified to only include rates
+    # 5) JSON summary – pair-specific filename
     # ------------------------------------------------------------------
     summary = {
         "naive_rate": naive_rate,
         "flow_rate": flow_rate,
-        # Histories are stored so that downstream metrics (moving average,
-        # autocorrelation, etc.) can be computed without re-running the
-        # Monte-Carlo experiment.
         "naive_hist": naive_hist,
         "flow_hist": flow_hist,
     }
-    json_path = results_dir / "gmm_swap_rate.json"
+
+    # Use pair-specific identifier to avoid overwriting files when looping
+    # over multiple temperature pairs.
+    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
+    json_path = results_dir / json_name
     with open(json_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
-    logger.info(f"Wrote summary to {json_path}")
-    
+    logger.info("Wrote summary to %s", json_path)
+
     # Log a table to wandb
     if WANDB_AVAILABLE and cfg.get("wandb", False):
-        # Create a table with side-by-side comparison of acceptance
         data = [[i, naive_hist[i], flow_hist[i]] for i in range(n_attempts)]
         table = wandb.Table(columns=["Step", "Naive PT", "Flow-based PT"], data=data)
         wandb.log({"swap_acceptance_history": table})
-        
-        # Finalize wandb logging
-        wandb.finish()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Backwards-compatible *main* (path-based) – for CLI usage
+# ──────────────────────────────────────────────────────────────────
+
+
+def main(config_path: str):
+    """Run GMM extreme-swap experiment and report acceptance rates."""
+    cfg = load_config(config_path)
+    run(cfg)
 
 
 if __name__ == "__main__":

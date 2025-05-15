@@ -32,14 +32,13 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+from src.accelmd.evaluators.gmm_swap_rate import _pair_suffix
 
-def _load_results_json(results_dir: Path) -> Dict[str, Any]:
-    """Helper that loads *gmm_swap_rate.json* from *results_dir*.
 
-    Raises FileNotFoundError if no such file exists; returns the parsed
-    dictionary otherwise.
-    """
-    json_path = results_dir / "gmm_swap_rate.json"
+def _load_results_json(results_dir: Path, t_low: float, t_high: float) -> Dict[str, Any]:
+    """Load the JSON summary for a specific temperature pair."""
+    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
+    json_path = results_dir / json_name
     if not json_path.is_file():
         raise FileNotFoundError(
             f"Could not find results JSON at '{json_path}'. "
@@ -64,7 +63,8 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # 1) Locate & load the JSON summary
     # ------------------------------------------------------------------
     results_dir = Path(cfg["evaluator"]["results_dir"])
-    data = _load_results_json(results_dir)
+    t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
+    data = _load_results_json(results_dir, t_low, t_high)
 
     # ------------------------------------------------------------------
     # 2) Extract acceptance rates
@@ -89,8 +89,14 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # 4) Optionally log to wandb
     # ------------------------------------------------------------------
     if _WANDB_AVAILABLE and cfg.get("wandb", False):
-        wandb.log({
-            "naive_rate": naive_rate,
-            "flow_rate": flow_rate,
-        })
-        logger.debug("Logged acceptance rates to wandb.")
+        try:
+            if wandb.run is not None:
+                wandb.log({
+                    "summary_naive_rate": naive_rate,
+                    "summary_flow_rate": flow_rate,
+                })
+                logger.debug("Logged acceptance rates to wandb.")
+            else:
+                logger.warning("No active wandb run found. Skipping wandb logging.")
+        except Exception as e:
+            logger.warning(f"Error logging to wandb: {e}")

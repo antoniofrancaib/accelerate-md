@@ -40,14 +40,17 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+from src.accelmd.evaluators.gmm_swap_rate import _pair_suffix
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_histories(results_dir: Path) -> tuple[List[int], List[int]]:
-    """Load acceptance histories from JSON file."""
-    json_path = results_dir / "gmm_swap_rate.json"
+def _load_histories(results_dir: Path, t_low: float, t_high: float) -> tuple[List[int], List[int]]:
+    """Load histories for a specific temperature pair."""
+    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
+    json_path = results_dir / json_name
     if not json_path.is_file():
         raise FileNotFoundError(
             f"Results JSON '{json_path}' not found. Run swap-rate evaluation first."
@@ -106,7 +109,8 @@ def _autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
 def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     """Compute and plot the acceptance autocorrelation functions."""
     results_dir = Path(cfg["evaluator"]["results_dir"])
-    naive_hist, flow_hist = _load_histories(results_dir)
+    t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
+    naive_hist, flow_hist = _load_histories(results_dir, t_low, t_high)
 
     swap_interval = int(cfg["pt"].get("swap_interval", 100))
     L = swap_interval  # Max lag for ACF & IACT
@@ -132,11 +136,17 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     logger.info("IACT (Flow PT)  = %.3f", iact_flow)
 
     if _WANDB_AVAILABLE and cfg.get("wandb", False):
-        wandb.log({
-            "iact_naive": iact_naive,
-            "iact_flow": iact_flow,
-        })
-        logger.debug("Logged IACT values to wandb.")
+        try:
+            if wandb.run is not None:
+                wandb.log({
+                    "iact_naive": iact_naive,
+                    "iact_flow": iact_flow,
+                })
+                logger.debug("Logged IACT values to wandb.")
+            else:
+                logger.warning("No active wandb run found. Skipping IACT wandb logging.")
+        except Exception as e:
+            logger.warning(f"Error logging IACT to wandb: {e}")
 
     # ------------------------------------------------------------------
     # 2) Plot ACF curves
@@ -153,12 +163,18 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
 
     plot_dir = Path(cfg["evaluator"]["plot_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plot_dir / "acceptance_autocorrelation.png"
+    out_path = plot_dir / f"acceptance_autocorrelation_{_pair_suffix(t_low, t_high)}.png"
     plt.savefig(out_path, dpi=200)
     logger.info("Autocorrelation plot saved to %s", out_path)
 
     if _WANDB_AVAILABLE and cfg.get("wandb", False):
-        wandb.log({"acceptance_autocorrelation": wandb.Image(str(out_path))})
-        logger.debug("Logged autocorrelation figure to wandb.")
+        try:
+            if wandb.run is not None:
+                wandb.log({"acceptance_autocorrelation": wandb.Image(str(out_path))})
+                logger.debug("Logged autocorrelation figure to wandb.")
+            else:
+                logger.warning("No active wandb run found. Skipping autocorrelation plot wandb logging.")
+        except Exception as e:
+            logger.warning(f"Error logging autocorrelation plot to wandb: {e}")
 
     plt.close()

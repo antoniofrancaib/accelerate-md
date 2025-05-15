@@ -19,10 +19,20 @@ from pathlib import Path
 from types import ModuleType
 from typing import List, Dict, Any
 
+# Try to import wandb, but make it optional
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 # Local imports
 from src.accelmd.utils.config import load_config
 from src.accelmd.evaluators import metrics as _metrics_pkg
-from src.accelmd.evaluators.gmm_swap_rate import main as run_gmm_swap_rate
+from src.accelmd.evaluators import gmm_swap_rate as _swap_mod
+
+import copy
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -49,50 +59,74 @@ def _discover_metric_modules() -> List[ModuleType]:
     return mods
 
 
+def _temperature_schedule(pt_cfg: Dict[str, Any]) -> List[float]:
+    """Compute list of temperatures according to *pt_cfg*."""
+    t_low, t_high = float(pt_cfg["temp_low"]), float(pt_cfg["temp_high"])
+    n = int(pt_cfg["total_n_temp"])
+    schedule = pt_cfg.get("temp_schedule", "geom")
+    if n < 2:
+        raise ValueError("total_n_temp must be >= 2")
+    if schedule == "linear":
+        temps = np.linspace(t_low, t_high, n)
+    else:  # default geom
+        temps = np.geomspace(t_low, t_high, n)
+    # Round to 2 decimal places to match checkpoint naming convention
+    return [round(float(t), 2) for t in temps]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry-point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def evaluate(cfg: Dict[str, Any], config_path: str) -> None:
+def evaluate(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     """Run the full evaluation pipeline.
     
     This function:
-    1. Runs gmm_swap_rate to generate the base metrics and histories
-    2. Executes each metric module that depends on gmm_swap_rate's output
+    1. Iterates over each adjacent temperature pair in the schedule
+    2. Runs gmm_swap_rate for that pair to generate base metrics and histories
+    3. Executes each metric module for that pair
     
     Parameters
     ----------
     cfg : dict
-        The loaded configuration dictionary
-    config_path : str
-        Path to the original config file for passing to gmm_swap_rate
+        The loaded configuration dictionary (baseline, extreme temps)
     """
-    # ------------------------------------------------------------------
-    # 1) Create necessary directories
-    # ------------------------------------------------------------------
-    # Create directories specified in evaluator section to avoid race conditions
-    eval_dirs = [cfg["evaluator"].get(k) for k in ("plot_dir", "results_dir")]
-    for d in eval_dirs:
-        if d is None:
-            continue
-        Path(d).mkdir(parents=True, exist_ok=True)
+    # 0) Ensure output directories exist
+    for key in ("plot_dir", "results_dir"):
+        Path(cfg["evaluator"][key]).mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # 2) Run GMM swap rate evaluation first
-    # ------------------------------------------------------------------
-    logger.info("Running GMM swap rate evaluation to generate base metrics...")
-    run_gmm_swap_rate(config_path)
-    
-    # ------------------------------------------------------------------
-    # 3) Execute all metrics modules
-    # ------------------------------------------------------------------
-    for mod in _discover_metric_modules():
-        logger.info("Running metric: %s.run", mod.__name__)
-        if not hasattr(mod, "run"):
-            raise AttributeError(f"Metric module '{mod.__name__}' lacks a 'run' function")
-        mod.run(cfg)
+    temps = _temperature_schedule(cfg["pt"])
+    logger.info("Temperature schedule: %s", temps)
 
-    print("\N{white heavy check mark} All metrics complete.")
+    for i in range(len(temps) - 1):
+        t_low, t_high = temps[i], temps[i + 1]
+        logger.info("Evaluating pair T_low=%s  →  T_high=%s", t_low, t_high)
+
+        pair_cfg = copy.deepcopy(cfg)
+        pair_cfg["pt"]["temp_low"] = float(t_low)
+        pair_cfg["pt"]["temp_high"] = float(t_high)
+
+        # 1) Run swap-rate experiment for this pair
+        _swap_mod.run(pair_cfg)
+
+        # 2) Run downstream metrics
+        for mod in _discover_metric_modules():
+            logger.info("  ↳ Running metric: %s.run", mod.__name__)
+            if not hasattr(mod, "run"):
+                raise AttributeError(
+                    f"Metric module '{mod.__name__}' lacks a 'run' function")
+            mod.run(pair_cfg)
+            
+    # No need to call wandb.finish() here as gmm_swap_rate already handles it per-pair
+    try:
+        # Check for any lingering wandb runs
+        if WANDB_AVAILABLE and "wandb" in cfg and cfg["wandb"] and wandb.run is not None:
+            logger.warning("Found lingering wandb run at end of evaluation - finishing it")
+            wandb.finish()
+    except Exception as e:
+        logger.warning(f"Error finalizing wandb: {e}")
+
+    print("\N{white heavy check mark} All metrics complete for all temperature pairs.")
 
 
 def main() -> None:  # noqa: D401 – imperative API
@@ -141,7 +175,7 @@ def main() -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 3) Run the complete evaluation pipeline
     # ------------------------------------------------------------------
-    evaluate(cfg, args.config)
+    evaluate(cfg)
 
 
 if __name__ == "__main__":
