@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Experiment: Extreme‐swap acceptance on 2D GMM + RealNVP flows
 # -----------------------------------------------------------------------------
-name: "gmm_pt_extreme_swap"
+name: "gmm40_grid"
 device: "cuda"
 
 # -----------------------------------------------------------------------------
@@ -9,8 +9,8 @@ device: "cuda"
 # -----------------------------------------------------------------------------
 gmm:
   dim: 2
-  n_mixes: 36
-  loc_scaling: 5.0
+  n_mixes: 40
+  loc_scaling: 6.0
 
   # Mode centers
   locations:
@@ -47,13 +47,13 @@ gmm:
   uniform_mode_radius: 3.0    # radius of the circle
   
   # Grid arrangement parameters (when mode_arrangement = "grid")
-  grid_x_range: [-4.0, 4.0]   # min and max x-coordinates
-  grid_y_range: [-4.0, 4.0]   # min and max y-coordinates
-  grid_rows: 6                # number of rows in the grid (suggestion: sqrt(n_mixes))
-  grid_cols: 6                # number of columns in the grid
+  grid_x_range: [-6.0, 6.0]   # min and max x-coordinates
+  grid_y_range: [-6.0, 6.0]   # min and max y-coordinates
+  grid_rows: 5                # number of rows in the grid (suggestion: sqrt(n_mixes))
+  grid_cols: 8                # number of columns in the grid
   
   # Common parameters for non-custom modes
-  uniform_mode_scale: 0.15    # isotropic std-dev for all components
+  uniform_mode_scale: 0.18    # isotropic std-dev for all components
 
 # -----------------------------------------------------------------------------
 # 2) Parallel Tempering settings (naive & flow‐based share these)
@@ -76,34 +76,36 @@ pt:
 trainer:
   realnvp:
     # where to save each temperature‐pair flow
-    checkpoint_dir: "checkpoints/realnvp_gmm"
+    checkpoint_dir: "checkpoints/realnvp_gmm40"
 
     # model architecture
     model:
       dim:           2
-      hidden_dim:  256
-      n_couplings:  14
+      hidden_dim:  512
+      n_couplings:  30
       use_permutation: true
 
     # optimization
     training:
-      n_epochs:        100
-      batch_size:      256
-      learning_rate:  3e-4
-      initial_lr:     1e-4
+      n_epochs:        120
+      batch_size:      1024
+      learning_rate:  5e-5
+      initial_lr:     1e-5
       max_grad_norm:  5.0
-      warmup_epochs:   5
+      warmup_epochs:   10
       eta_min_factor:  0.05
       patience:       20
-      val_split:      0.1
+      val_split:      0.10
+      n_samples:     200000
       seed:           42
+      mse_weight:     0.05
 
 # -----------------------------------------------------------------------------
 # 4) Evaluation & I/O
 # -----------------------------------------------------------------------------
 evaluator:
   # where to read the flows you just trained
-  checkpoint_dir: "checkpoints/realnvp_gmm"
+  checkpoint_dir: "checkpoints/realnvp_gmm40"
 
   # where to dump plots & summary JSON
   plot_dir:    "plots/pt"

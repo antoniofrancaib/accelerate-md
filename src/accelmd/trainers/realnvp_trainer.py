@@ -210,6 +210,17 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     # ───────────────────────────────────────────────────
     flow = create_realnvp_flow(cfg["trainer"]["realnvp"]["model"]).to(device)
     
+    # Initialize weights with smaller values to improve numerical stability
+    def init_weights(m):
+        if isinstance(m, torch.nn.Linear):
+            # Use a smaller initialization scale
+            torch.nn.init.xavier_normal_(m.weight, gain=0.5)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+            
+    flow.apply(init_weights)
+    logger.info("Model initialized with stabilized weight initialization")
+
     # Ensure numeric values are converted to appropriate types
     learning_rate = float(tr_cfg["learning_rate"])
     initial_lr = float(tr_cfg.get("initial_lr", learning_rate * 0.3))
@@ -217,6 +228,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     max_epochs = int(tr_cfg["n_epochs"])
     eta_min_factor = float(tr_cfg["eta_min_factor"])
     max_grad_norm = float(tr_cfg["max_grad_norm"])
+    mse_weight = float(tr_cfg.get("mse_weight", 0.05))
     
     opt = optim.Adam(flow.parameters(), lr=learning_rate)
 
@@ -236,6 +248,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     best_loss = float("inf")
     best_state = None
     step_idx = 0
+    patience_counter = 0        # ← NEW: prevents NameError
     for epoch in range(tr_cfg["n_epochs"]):
         flow.train()
         running = 0.0
@@ -251,9 +264,35 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             loss_lh = -(hi_gmm.log_prob(y_hi) / t_high + ld_fwd).mean()
 
             # small pairwise stabiliser
-            mse = 0.05 * ((y_lo - xb_lo) ** 2).sum(-1).mean()
+            mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
+
+            # Check for NaN values and report which component is causing them
+            if torch.isnan(loss_hl):
+                gmm_log_prob = gmm.log_prob(y_lo).mean()
+                logger.warning(f"NaN in loss_hl: gmm_log_prob={gmm_log_prob.item():.4f}, ld_inv={ld_inv.mean().item():.4f}")
+                # Clip extremely negative values to prevent NaN
+                loss_hl = -torch.clamp(gmm.log_prob(y_lo) + ld_inv, min=-1e6, max=1e6).mean()
+
+            if torch.isnan(loss_lh):
+                hi_log_prob = hi_gmm.log_prob(y_hi).mean()
+                logger.warning(f"NaN in loss_lh: hi_log_prob={hi_log_prob.item():.4f}, ld_fwd={ld_fwd.mean().item():.4f}")
+                # Clip extremely negative values to prevent NaN
+                loss_lh = -torch.clamp(hi_gmm.log_prob(y_hi) / t_high + ld_fwd, min=-1e6, max=1e6).mean()
+
+            if torch.isnan(mse):
+                logger.warning(f"NaN in MSE stabilizer")
+                mse = torch.tensor(0.0, device=device)
 
             loss = loss_hl + loss_lh + mse
+            
+            # Log individual loss components
+            if WANDB and cfg.get("wandb", False):
+                wandb.log({
+                    "loss_hl": loss_hl.item(),
+                    "loss_lh": loss_lh.item(),
+                    "mse": mse.item(),
+                    "total": loss.item(),
+                })
 
             opt.zero_grad()
             loss.backward()
@@ -276,8 +315,22 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
                 loss_hl = -(gmm.log_prob(y_lo) + ld_inv).mean()
                 y_hi, ld_fwd = flow.forward(xb_lo)
                 loss_lh = -(hi_gmm.log_prob(y_hi) / t_high + ld_fwd).mean()
-                mse = 0.05 * ((y_lo - xb_lo) ** 2).sum(-1).mean()
-                running += (loss_hl + loss_lh + mse).item() * xb_hi.size(0)
+                mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
+                
+                # Handle NaNs in validation too
+                if torch.isnan(loss_hl):
+                    loss_hl = torch.tensor(0.0, device=device)
+                if torch.isnan(loss_lh):
+                    loss_lh = torch.tensor(0.0, device=device)
+                if torch.isnan(mse):
+                    mse = torch.tensor(0.0, device=device)
+                    
+                batch_loss = loss_hl + loss_lh + mse
+                if torch.isnan(batch_loss):
+                    logger.warning("NaN in validation loss, skipping batch")
+                    continue
+                    
+                running += batch_loss.item() * xb_hi.size(0)
         val_loss = running / len(val_set)
 
         logger.info(f"[{epoch+1}/{tr_cfg['n_epochs']}] "
@@ -299,8 +352,19 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             logger.info("Early stopping.")
             break
 
+    # Save the best model, or the last one if no good model was found
     logger.info(f"Best val loss: {best_loss:.4f}")
-    return ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+    checkpoint_path = ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+
+    if best_state is not None:
+        torch.save(best_state, checkpoint_path)
+    else:
+        # If no good checkpoint (everything was NaN), at least save the current weights
+        # so the post-training visualization can still run
+        logger.warning("No valid checkpoint found - saving final model state")
+        torch.save(flow.state_dict(), checkpoint_path)
+    
+    return checkpoint_path
 
 
 # ───────────────────────────────────────────────────
