@@ -41,7 +41,11 @@ def _init_wandb(cfg: Dict[str, Any]) -> None:
     # Get GMM config for logging
     gmm_cfg = cfg.get("gmm", {})
     pt_cfg = cfg.get("pt", {})
-    n_modes = len(gmm_cfg.get("locations", []))
+    # Determine number of modes robustly even when custom locations are omitted
+    if gmm_cfg.get("custom_modes", True) and "locations" in gmm_cfg:
+        n_modes = len(gmm_cfg["locations"])
+    else:
+        n_modes = int(gmm_cfg.get("n_mixes", 0))
     t_low = float(pt_cfg.get("temp_low", 1.0))
     t_high = float(pt_cfg.get("temp_high", 10.0))
     
@@ -64,17 +68,81 @@ def _build_gmm_from_config(gmm_cfg: dict, device: torch.device) -> GMM:
         device=device,
     )
 
-    # Override the randomly-generated parameters with user-provided ones
+    custom_modes = gmm_cfg.get("custom_modes", True)
+
     with torch.no_grad():
-        if "locations" in gmm_cfg:
-            gmm.locs.copy_(torch.tensor(gmm_cfg["locations"], device=device))
-            logger.info("Applied custom GMM locations from config")
-        if "scales" in gmm_cfg:
-            gmm.scale_trils.copy_(torch.tensor(gmm_cfg["scales"], device=device))
-            logger.info("Applied custom GMM scales from config")
-        if "weights" in gmm_cfg:
-            gmm.cat_probs.copy_(torch.tensor(gmm_cfg["weights"], device=device))
-            logger.info("Applied custom GMM weights from config")
+        if custom_modes:
+            # Override the randomly-generated parameters with user-provided ones (if present)
+            if "locations" in gmm_cfg:
+                gmm.locs.copy_(torch.tensor(gmm_cfg["locations"], device=device))
+                logger.info("Applied custom GMM locations from config")
+            if "scales" in gmm_cfg:
+                gmm.scale_trils.copy_(torch.tensor(gmm_cfg["scales"], device=device))
+                logger.info("Applied custom GMM scales from config")
+            if "weights" in gmm_cfg:
+                gmm.cat_probs.copy_(torch.tensor(gmm_cfg["weights"], device=device))
+                logger.info("Applied custom GMM weights from config")
+        else:
+            # Generate evenly-spaced modes on a circle (2-D specific)
+            if gmm_cfg.get("dim", 2) != 2:
+                raise ValueError("Uniform mode generation is currently implemented for dim==2 only.")
+
+            n = gmm_cfg.get("n_mixes", 5)
+            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
+            
+            # Determine mode arrangement
+            mode_arrangement = gmm_cfg.get("mode_arrangement", "circle")
+            
+            if mode_arrangement == "circle":
+                # Place modes evenly around a circle
+                radius = float(gmm_cfg.get("uniform_mode_radius", 3.0))
+                angles = torch.linspace(0, 2 * torch.pi, n + 1, device=device)[:-1]
+                locs = torch.stack((radius * torch.cos(angles), radius * torch.sin(angles)), dim=1)
+                
+            elif mode_arrangement == "grid":
+                # Place modes in a grid pattern
+                grid_x_range = gmm_cfg.get("grid_x_range", [-4.0, 4.0])
+                grid_y_range = gmm_cfg.get("grid_y_range", [-4.0, 4.0])
+                
+                # Use specified grid dimensions or calculate them automatically
+                if "grid_rows" in gmm_cfg and "grid_cols" in gmm_cfg:
+                    rows = int(gmm_cfg.get("grid_rows"))
+                    cols = int(gmm_cfg.get("grid_cols"))
+                else:
+                    # Automatically determine grid dimensions to be approximately square
+                    rows = int(np.ceil(np.sqrt(n)))
+                    cols = int(np.ceil(n / rows))
+                
+                # Generate grid positions
+                x_points = torch.linspace(grid_x_range[0], grid_x_range[1], cols, device=device)
+                y_points = torch.linspace(grid_y_range[0], grid_y_range[1], rows, device=device)
+                
+                # Create a mesh grid
+                grid_x, grid_y = torch.meshgrid(x_points, y_points, indexing='ij')
+                grid_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
+                
+                # If we have more grid positions than needed, take only the first n
+                if grid_positions.shape[0] > n:
+                    locs = grid_positions[:n]
+                else:
+                    # If we need more positions than the grid provides, duplicate some
+                    # This shouldn't normally happen if grid dimensions are specified correctly
+                    logger.warning(f"Grid dimensions ({rows}x{cols}={rows*cols}) don't provide enough positions for {n} modes. Some modes will overlap.")
+                    repeats_needed = int(np.ceil(n / grid_positions.shape[0]))
+                    repeated_positions = grid_positions.repeat(repeats_needed, 1)
+                    locs = repeated_positions[:n]
+            else:
+                raise ValueError(f"Unknown mode_arrangement: '{mode_arrangement}'. Use 'circle' or 'grid'.")
+                
+            gmm.locs.copy_(locs)
+            
+            # Isotropic covariance with specified scale
+            scale_tril = torch.diag(torch.full((2,), scale_val, device=device))
+            gmm.scale_trils.copy_(torch.stack([scale_tril] * n))
+            
+            # Uniform mixture weights
+            gmm.cat_probs.copy_(torch.full((n,), 1.0 / n, device=device))
+
     return gmm
 
 

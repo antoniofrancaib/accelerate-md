@@ -15,9 +15,7 @@ checkpoints/
 tests/
 train_flow.sh
 evaluate_flow.sh
-run_gmm_40modes_experiment.sh
 run_gmm_experiment.sh
-gmm_40modes.yaml
 
 env/
 venv/

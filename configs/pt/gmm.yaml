@@ -9,8 +9,8 @@ device: "cuda"
 # -----------------------------------------------------------------------------
 gmm:
   dim: 2
-  n_mixes: 5
-  loc_scaling: 1.0
+  n_mixes: 36
+  loc_scaling: 5.0
 
   # Mode centers
   locations:
@@ -32,12 +32,36 @@ gmm:
   weights: [0.2, 0.2, 0.2, 0.2, 0.2]
 
 # -----------------------------------------------------------------------------
+#  optional: toggle between custom locations or uniform placement
+# -----------------------------------------------------------------------------
+# If set to true (default), the explicitly provided `locations`, `scales`, and
+# `weights` above are used.  If false, the code will ignore those fields and
+# instead generate `n_mixes` components that are evenly distributed.
+#
+# NOTE: Only implemented for dim==2 at present.
+# -----------------------------------------------------------------------------
+  custom_modes: false          # use the hard-coded modes above
+  mode_arrangement: "grid"    # "circle" or "grid"
+  
+  # Circle arrangement parameters (when mode_arrangement = "circle")
+  uniform_mode_radius: 3.0    # radius of the circle
+  
+  # Grid arrangement parameters (when mode_arrangement = "grid")
+  grid_x_range: [-4.0, 4.0]   # min and max x-coordinates
+  grid_y_range: [-4.0, 4.0]   # min and max y-coordinates
+  grid_rows: 6                # number of rows in the grid (suggestion: sqrt(n_mixes))
+  grid_cols: 6                # number of columns in the grid
+  
+  # Common parameters for non-custom modes
+  uniform_mode_scale: 0.15    # isotropic std-dev for all components
+
+# -----------------------------------------------------------------------------
 # 2) Parallel Tempering settings (naive & flow‐based share these)
 # -----------------------------------------------------------------------------
 pt:
   temp_low: 1.0
-  temp_high: 100.0
-  total_n_temp: 10
+  temp_high: 10.0
+  total_n_temp: 2
   temp_schedule: "geom"     # "geom" or "linear"
   num_chains: 1
   num_steps: 100000
