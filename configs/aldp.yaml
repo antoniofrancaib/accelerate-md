@@ -1,0 +1,54 @@
+# configs/aldp.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Experiment identity + hardware
+# ─────────────────────────────────────────────────────────────
+name: "aldp"
+device: "cuda"         # or "cpu"
+
+# ─────────────────────────────────────────────────────────────
+# Molecular system definition (was in aldp_config.yaml)
+# ─────────────────────────────────────────────────────────────
+system:
+  temperature: 300           # Kelvin
+  energy_cut: 1.e8
+  energy_max: 1.e20
+  n_threads: 64
+  transform: internal        # can be 'internal', 'cartesian', 'mixed'
+  shift_dih: false
+  env: implicit              # or 'vacuum'
+  data:
+    transform_path: "./data/aldp/position_min_energy.pt"
+
+# ─────────────────────────────────────────────────────────────
+# Parallel‐Tempering settings (merged aldp_cart & aldp_inter)
+# ─────────────────────────────────────────────────────────────
+pt:
+  temp_low: 1.0
+  temp_high: 20.0
+  total_n_temp: 10
+  temp_schedule: "geom"      # or "linear"
+
+  # chain & step parameters
+  num_chains: 100            # was 100 in aldp_cart.yaml / 10 in aldp_inter.yaml
+  num_steps: 500000          # you could override per‐run via CLI if desired
+  burn_in: 1000              # only in aldp_inter.yaml
+
+  # swap / logging
+  swap_interval: 200
+  check_interval: 10000      # larger interval for heavy workloads
+  step_size: 1e-4            # Langevin step
+
+# ─────────────────────────────────────────────────────────────
+# Plotting & output (where to save trajectories, figures, etc.)
+# ─────────────────────────────────────────────────────────────
+io:
+  plot_folder: "plots/pt"
+  save_folder: "data/pt"
+
+# ─────────────────────────────────────────────────────────────
+# Evaluation settings (only in aldp_inter.yaml)
+# ─────────────────────────────────────────────────────────────
+evaluation:
+  num_samples_to_plot: 1000000
+  num_samples_for_eval:   10000
