@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-from src.accelmd.evaluators.gmm_swap_rate import _pair_suffix
+from src.accelmd.evaluators.swap_rate import _pair_suffix
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -30,26 +30,24 @@ echo "JobID: $SLURM_JOB_ID"
 echo "Running on $(hostname)"
 echo "Directory: $(pwd)"
 
-# Create all necessary output directories
-mkdir -p checkpoints/realnvp_gmm
-mkdir -p plots/pt
-mkdir -p results
+# Create logs directory if it doesn't exist
 mkdir -p logs
 
-# Add current directory to PYTHONPATH to ensure modules can be found
+# Add current directory to PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-# Configuration file path
-CONFIG="configs/pt/gmm.yaml"
+# Configuration file (point to your YAML in configs/pt)
+CONFIG="${CONFIG:-configs/gmm.yaml}"
 
-# Display GPU information
+# Display GPU info
 nvidia-smi
 
-# Command to run the full pipeline (train flows + evaluate swap)
-CMD="python -u runner.py run-all --config $CONFIG --wandb"
+# Run the full pipeline (train + evaluate)
+# ———> note we drop --experiment-name since main.py doesn’t accept it
+CMD="python -u main.py --run-all --config $CONFIG"
 
 echo "============================================="
-echo "Starting GMM experiment with RealNVP flows"
+echo "Starting AccelMD GMM experiment"
 echo "Config: $CONFIG"
 echo "============================================="
 echo "Executing:"
@@ -58,7 +56,17 @@ echo "============================================="
 
 eval $CMD
 
+# Determine output directory from config + suffix
+OUTPUT_DIR=$(python - <<PY
+import yaml
+cfg = yaml.safe_load(open("$CONFIG"))
+name = cfg.get("name", "default") + "_job${SLURM_JOB_ID}"
+base = cfg.get("output",{}).get("base_dir","outputs")
+print(f"{base}/{name}")
+PY
+)
+
 echo "============================================="
 echo "Experiment completed"
-echo "Results saved to plots/pt/ and results/"
-echo "=============================================" 
+echo "Results saved to: $OUTPUT_DIR/"
+echo "============================================="

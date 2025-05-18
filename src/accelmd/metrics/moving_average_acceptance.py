@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     _WANDB_AVAILABLE = False
 
-from src.accelmd.evaluators.gmm_swap_rate import _pair_suffix
+from src.accelmd.evaluators.swap_rate import _pair_suffix
 
 logger = logging.getLogger(__name__)
 

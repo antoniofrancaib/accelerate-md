@@ -12,39 +12,8 @@ gmm:
   n_mixes: 40
   loc_scaling: 6.0
 
-  # Mode centers
-  locations:
-    - [-2.5,  0.8]
-    - [-0.7,  1.5]
-    - [ 1.2,  0.3]
-    - [ 0.1, -1.7]
-    - [ 3.0, -1.3]
-
-  # Covariances (scale_tril)
-  scales:
-    - [[0.40,  0.05], [ 0.05, 0.45]]
-    - [[0.10,  0.00], [ 0.00, 0.15]]
-    - [[0.35,  0.00], [ 0.00, 0.35]]
-    - [[0.25, -0.07], [-0.07, 0.18]]
-    - [[0.12,  0.00], [ 0.00, 0.25]]
-
-  # Mixture weights
-  weights: [0.2, 0.2, 0.2, 0.2, 0.2]
-
-# -----------------------------------------------------------------------------
-#  optional: toggle between custom locations or uniform placement
-# -----------------------------------------------------------------------------
-# If set to true (default), the explicitly provided `locations`, `scales`, and
-# `weights` above are used.  If false, the code will ignore those fields and
-# instead generate `n_mixes` components that are evenly distributed.
-#
-# NOTE: Only implemented for dim==2 at present.
-# -----------------------------------------------------------------------------
   custom_modes: false          # use the hard-coded modes above
   mode_arrangement: "grid"    # "circle" or "grid"
-  
-  # Circle arrangement parameters (when mode_arrangement = "circle")
-  uniform_mode_radius: 3.0    # radius of the circle
   
   # Grid arrangement parameters (when mode_arrangement = "grid")
   grid_x_range: [-6.0, 6.0]   # min and max x-coordinates
@@ -82,7 +51,7 @@ trainer:
     model:
       dim:           2
       hidden_dim:  512
-      n_couplings:  30
+      n_couplings:  50
       use_permutation: true
 
     # optimization
@@ -110,3 +79,21 @@ evaluator:
   # where to dump plots & summary JSON
   plot_dir:    "plots/pt"
   results_dir: "results"
+
+# -----------------------------------------------------------------------------
+# 4) Output Structure (for main.py)
+# -----------------------------------------------------------------------------
+output:
+  # Base directory for all experiment outputs
+  base_dir: "outputs"
+  
+  # Per-experiment structure (absolute paths to avoid circular refs)
+  experiment_dir: "outputs/${name}"
+  model_path: "outputs/${name}/model.pt"
+  config_copy_path: "outputs/${name}/config.yaml"
+  metrics_path: "outputs/${name}/metrics.json"
+  
+  # Subdirectories (absolute paths to avoid circular refs)
+  plots_dir: "outputs/${name}/plots"
+  logs_dir: "outputs/${name}/logs"
+  log_file: "outputs/${name}/logs/experiment.log"

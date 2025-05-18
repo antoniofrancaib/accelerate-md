@@ -16,7 +16,6 @@ from importlib import import_module
 # Eagerly import the metric modules so they are available as attributes.
 # This is purely for convenience and has no functional side-effects.
 _modules = [
-    "summary_rates",
     "moving_average_acceptance",
     "acceptance_autocorrelation",
 ]
@@ -26,10 +25,10 @@ for _m in _modules:
     except Exception as exc:  # pragma: no cover — robust to missing deps
         # Defer the ImportError until attribute access to keep package importable
         import types, warnings
-
+        err = exc
         def _lazy_fail(*_args, **_kwargs):  # type: ignore[override]
             raise RuntimeError(
-                f"Failed to import metric module '{_m}': {exc}") from exc
+                f"Failed to import metric module '{_m}': {err}") from err
 
         mod = types.ModuleType(f"{__name__}.{_m}")
         mod.run = _lazy_fail  # type: ignore[attr-defined]

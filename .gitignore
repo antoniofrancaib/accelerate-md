@@ -16,6 +16,7 @@ tests/
 train_flow.sh
 evaluate_flow.sh
 run_gmm_experiment.sh
+outputs/ 
 
 env/
 venv/

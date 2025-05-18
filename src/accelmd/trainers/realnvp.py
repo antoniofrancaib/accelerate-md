@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from src.accelmd.utils.config import load_config
-from src.accelmd.data.gmm_dataset import TemperedGMMPairDataset
+from src.accelmd.data.gmm import TemperedGMMPairDataset
 from src.accelmd.targets.gmm import GMM
 from src.accelmd.models.realnvp import create_realnvp_flow
 

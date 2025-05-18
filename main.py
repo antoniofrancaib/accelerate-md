@@ -1,0 +1,185 @@
+#!/usr/bin/env python
+"""
+Unified entry-point for the GMM ⇆ RealNVP experiments.
+
+Flags
+-----
+--train       Train the RealNVP flow (and dump the bidirectional-scatter sanity plot)
+--evaluate    Run swap-rate evaluation + all metrics/plots
+--run-all     Do both, in that order
+
+Example
+-------
+python main.py --config configs/gmm.yaml --run-all
+"""
+
+from __future__ import annotations
+import argparse, logging, shutil, json, copy
+from pathlib import Path
+from typing import Dict, Any
+
+import torch
+import yaml
+
+# ---- project imports --------------------------------------------------------
+from src.accelmd.utils.config import load_config
+from src.accelmd.trainers.realnvp import train_realnvp
+from src.accelmd.targets.gmm import GMM
+from src.accelmd.models.realnvp import create_realnvp_flow
+from src.accelmd.evaluators import swap_rate
+from src.accelmd.metrics import (
+    acceptance_autocorrelation,
+    moving_average_acceptance,
+)
+
+# --------------------------------------------------------------------------- #
+#                          small internal helpers                             #
+# --------------------------------------------------------------------------- #
+_LOG = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s ­%(levelname)s ­%(name)s ­ %(message)s",
+)
+
+def _experiment_dir(cfg: Dict[str, Any]) -> Path:
+    """Compute  …/outputs/<experiment-name>  (create if necessary)."""
+    name      = cfg["name"]
+    base_dir  = cfg.get("output", {}).get("base_dir", "outputs")
+    exp_dir   = Path(base_dir) / name
+    (exp_dir / "plots").mkdir(parents=True, exist_ok=True)
+    (exp_dir / "logs").mkdir(exist_ok=True)
+    return exp_dir
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRAIN
+# ─────────────────────────────────────────────────────────────────────────────
+def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: Path):
+    """Re-use the logic from scripts/train.py to make the 2×2 sanity figure."""
+    import matplotlib.pyplot as plt  # local import keeps CLI snappy
+
+    device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
+    gmm_cfg      = cfg["gmm"]
+    t_low        = float(cfg["pt"]["temp_low"])
+    t_high       = float(cfg["pt"]["temp_high"])
+
+    # --- rebuild same GMM ----------------------------------------------------
+    from src.accelmd.evaluators.swap_rate import _build_gmm_from_config
+    gmm    = _build_gmm_from_config(gmm_cfg, device)
+    hi_gmm = gmm.tempered_version(t_high, scaling_method="sqrt")
+
+    # --- load flow -----------------------------------------------------------
+    flow = create_realnvp_flow(cfg["trainer"]["realnvp"]["model"]).to(device)
+    flow.load_state_dict(torch.load(ckpt_path, map_location=device))
+    flow.eval()
+
+    # --- sample + map --------------------------------------------------------
+    N = 5_000
+    with torch.no_grad():
+        x_hi     = hi_gmm.sample((N,)).to(device)
+        x_lo     = gmm.sample((N,)).to(device)
+        x_hi2lo, _ = flow.inverse(x_hi)
+        x_lo2hi, _ = flow.forward(x_lo)
+
+    # --- figure --------------------------------------------------------------
+    def _scatter(ax, pts, title):
+        ax.scatter(pts[:, 0], pts[:, 1], s=4, alpha=.6)
+        ax.set_title(title)
+        ax.set_xlim(-7, 7); ax.set_ylim(-7, 7); ax.grid(alpha=.3)
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 10))
+    _scatter(ax[0, 0], x_hi.cpu(),    f"True High-T (T={t_high})")
+    _scatter(ax[0, 1], x_hi2lo.cpu(), "Mapped High→Low")
+    _scatter(ax[1, 0], x_lo.cpu(),    f"True Low-T (T={t_low})")
+    _scatter(ax[1, 1], x_lo2hi.cpu(), "Mapped Low→High")
+    plt.tight_layout()
+    fig.savefig(out_png, dpi=200)
+    plt.close(fig)
+
+    _LOG.info("Bidirectional verification figure saved → %s", out_png)
+
+
+def _train(cfg: Dict[str, Any], exp_dir: Path):
+    """Run training (if not already cached) and copy artefacts into *exp_dir*."""
+    t_low  = float(cfg["pt"]["temp_low"])
+    t_high = float(cfg["pt"]["temp_high"])
+    ckpt_expected = exp_dir / "model.pt"
+
+    if ckpt_expected.is_file():
+        _LOG.info("Model checkpoint already present – skipping training.")
+    else:
+        ckpt_path = train_realnvp(cfg)          # does the heavy lifting
+        shutil.copy2(ckpt_path, ckpt_expected)  # standardised name inside outputs/
+        _LOG.info("Checkpoint copied to %s", ckpt_expected)
+
+    # Always (re-)create the sanity scatter so that plots/ is complete
+    _generate_bidirectional_plot(
+        cfg,
+        ckpt_expected,
+        exp_dir / "plots" / "bidirectional_verification.png",
+    )
+
+    # Store a verbatim copy of the YAML that was *actually* used
+    with open(exp_dir / "config.yaml", "w", encoding="utf-8") as fp:
+        yaml.safe_dump(cfg, fp)
+    _LOG.info("Config snapshot written.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVALUATE
+# ─────────────────────────────────────────────────────────────────────────────
+def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
+    """Run swap-rate + metrics and collate outputs inside *exp_dir*."""
+    # We point the evaluator sub-modules *into*   outputs/<name>/…
+    cfg_eval = copy.deepcopy(cfg)  # avoid polluting the original dict
+    cfg_eval["evaluator"]["plot_dir"]   = str(exp_dir / "plots")
+    cfg_eval["evaluator"]["results_dir"] = str(exp_dir)
+
+    # -- 1) swap-rate (produces JSON summary) -------------------------------
+    swap_rate.run(cfg_eval)
+
+    # -- 2) metrics (two extra PNGs) ----------------------------------------
+    acceptance_autocorrelation.run(cfg_eval)
+    moving_average_acceptance.run(cfg_eval)
+
+    # -- 3) copy / rename JSON → metrics.json -------------------------------
+    from src.accelmd.evaluators.swap_rate import _pair_suffix
+    tl, th = float(cfg_eval["pt"]["temp_low"]), float(cfg_eval["pt"]["temp_high"])
+    json_src = exp_dir / f"gmm_swap_rate_{_pair_suffix(tl, th)}.json"
+    json_dst = exp_dir / "metrics.json"
+    shutil.copy2(json_src, json_dst)
+    _LOG.info("Metrics aggregated → %s", json_dst)
+
+
+# --------------------------------------------------------------------------- #
+#                                     CLI                                     #
+# --------------------------------------------------------------------------- #
+def main() -> None:
+    p = argparse.ArgumentParser(description="Altan RealNVP ⇆ GMM driver")
+    p.add_argument("--config", type=str, required=True,
+                   help="Path to experiment YAML (e.g. configs/gmm.yaml)")
+    p.add_argument("--train",   action="store_true",
+                   help="Train a RealNVP model")
+    p.add_argument("--evaluate", action="store_true",
+                   help="Evaluate model and generate plots")
+    p.add_argument("--run-all", action="store_true",
+                   help="Do both training and evaluation")
+    args = p.parse_args()
+
+    if not (args.train or args.evaluate or args.run_all):
+        p.error("Please specify --train, --evaluate or --run-all.")
+
+    cfg = load_config(args.config)
+    exp_dir = _experiment_dir(cfg)
+
+    if args.run_all:
+        _train(cfg, exp_dir)
+        _evaluate(cfg, exp_dir)
+    elif args.train:
+        _train(cfg, exp_dir)
+    elif args.evaluate:
+        _evaluate(cfg, exp_dir)
+
+
+if __name__ == "__main__":
+    main()
