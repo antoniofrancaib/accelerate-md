@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
-# Experiment: Extreme‐swap acceptance on 5D GMM + RealNVP flows (LIGHT VERSION)
+# Experiment: Extreme‐swap acceptance on 5D GMM + RealNVP flows
 # -----------------------------------------------------------------------------
-name: "gmm5_light_5d"
+name: "gmm5_grid_5d"
 device: "cuda"
 
 # -----------------------------------------------------------------------------
@@ -9,28 +9,35 @@ device: "cuda"
 # -----------------------------------------------------------------------------
 gmm:
   dim: 5                      # 5D Gaussian Mixture Model
-  n_mixes: 5                  # Reduced number of mixtures for speed
+  n_mixes: 16
   loc_scaling: 6.0
 
   custom_modes: false          # use generated modes
-  mode_arrangement: "random"   # "random" is more reliable for higher dims
+  mode_arrangement: "grid"    # "circle", "grid", or "random"
+  
+  # Grid arrangement parameters (when mode_arrangement = "grid")
+  grid_x_range: [-6.0, 6.0]    # min and max for dimension 0
+  grid_y_range: [-6.0, 6.0]    # min and max for dimension 1
+  grid_dim2_range: [-6.0, 6.0] # min and max for dimension 2
+  grid_dim3_range: [-6.0, 6.0] # min and max for dimension 3
+  grid_dim4_range: [-6.0, 6.0] # min and max for dimension 4
   
   # Common parameters for non-custom modes
-  uniform_mode_scale: 0.25     # isotropic std-dev for all components
+  uniform_mode_scale: 0.18    # isotropic std-dev for all components
 
 # -----------------------------------------------------------------------------
 # 2) Parallel Tempering settings (naive & flow‐based share these)
 # -----------------------------------------------------------------------------
 pt:
   temp_low: 1.0
-  temp_high: 5.0               # Reduced temperature gap for better acceptance
+  temp_high: 10.0
   total_n_temp: 2
-  temp_schedule: "geom"
+  temp_schedule: "geom"     # "geom" or "linear"
   num_chains: 1
-  num_steps: 10000             # Reduced number of steps for faster evaluation
-  burn_in:   500
+  num_steps: 100000
+  burn_in:   1000
   swap_interval: 100
-  check_interval: 500
+  check_interval: 1000
   step_size: 0.0001
 
 # -----------------------------------------------------------------------------
@@ -39,27 +46,27 @@ pt:
 trainer:
   realnvp:
     # where to save each temperature‐pair flow
-    checkpoint_dir: "checkpoints/realnvp_gmm5d_light"
+    checkpoint_dir: "checkpoints/realnvp_gmm5d"
 
     # model architecture
     model:
       dim:           5         # should match gmm.dim (will be automatically updated)
-      hidden_dim:    128       # reduced for faster training
-      n_couplings:   14        # reduced for faster training
+      hidden_dim:    512       # increased for higher dimensions
+      n_couplings:   50        # more coupling layers for higher dimensions
       use_permutation: true
 
     # optimization
     training:
-      n_epochs:        20      # reduced for faster training
-      batch_size:      512
+      n_epochs:        120
+      batch_size:      1024
       learning_rate:  5e-5
       initial_lr:     1e-5
       max_grad_norm:  5.0
-      warmup_epochs:   3
+      warmup_epochs:   10
       eta_min_factor:  0.05
-      patience:       5        # reduced for faster training
+      patience:       20
       val_split:      0.10
-      n_samples:     10000     # reduced for faster training
+      n_samples:     200000
       seed:           42
       mse_weight:     0.05
 
@@ -68,7 +75,7 @@ trainer:
 # -----------------------------------------------------------------------------
 evaluator:
   # where to read the flows you just trained
-  checkpoint_dir: "checkpoints/realnvp_gmm5d_light"
+  checkpoint_dir: "checkpoints/realnvp_gmm5d"
 
   # where to dump plots & summary JSON
   plot_dir:    "plots/pt"
@@ -90,4 +97,4 @@ output:
   # Subdirectories (absolute paths to avoid circular refs)
   plots_dir: "outputs/${name}/plots"
   logs_dir: "outputs/${name}/logs"
-  log_file: "outputs/${name}/logs/experiment.log"
+  log_file: "outputs/${name}/logs/experiment.log" 

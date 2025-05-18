@@ -5,7 +5,7 @@ All settings come from configs/pt/gmm.yaml.
 """
 
 from __future__ import annotations
-import os, logging, json, shutil
+import os, logging, json, shutil, copy
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -19,6 +19,7 @@ from src.accelmd.utils.config import load_config
 from src.accelmd.data.gmm import TemperedGMMPairDataset
 from src.accelmd.targets.gmm import GMM
 from src.accelmd.models.realnvp import create_realnvp_flow
+from src.accelmd.utils.gmm_modes import generate_gmm_modes
 
 # ───────────────────────────────────────────────────
 # Optional wandb
@@ -81,7 +82,9 @@ def _scheduler(optimiser: optim.Optimizer,
 
 def train_realnvp(cfg: Dict[str, Any]) -> Path:
     """Main training routine – returns path to best checkpoint."""
+    print(f"[DEBUG] Starting RealNVP training with dim={cfg['gmm']['dim']}, n_mixes={cfg['gmm']['n_mixes']}")
     device = torch.device(cfg.get("device", "cpu"))
+    print(f"[DEBUG] Using device: {device}")
 
     # ───────────────────────────────────────────────────
     # 0. Output dirs
@@ -90,10 +93,12 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     plot_dir = Path(cfg["evaluator"]["plot_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[DEBUG] Created output directories")
 
     # ───────────────────────────────────────────────────
     # 1. Build target GMM
     # ───────────────────────────────────────────────────
+    print(f"[DEBUG] Building GMM distribution...")
     gmm_cfg = cfg["gmm"]
     gmm = GMM(
         gmm_cfg["dim"],
@@ -107,6 +112,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
 
     with torch.no_grad():
         if custom_modes:
+            print(f"[DEBUG] Using custom GMM modes")
             # Fall back to previous behaviour but guard against missing keys
             if "locations" in gmm_cfg:
                 gmm.locs.copy_(torch.tensor(gmm_cfg["locations"], device=device))
@@ -115,78 +121,40 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             if "weights" in gmm_cfg:
                 gmm.cat_probs.copy_(torch.tensor(gmm_cfg["weights"], device=device))
         else:
-            # ------------------------------------------------------------------
-            # Uniform (evenly-spaced) mode generation on a circle in 2-D
-            # ------------------------------------------------------------------
-            if gmm_cfg["dim"] != 2:
-                raise ValueError("Uniform mode generation is currently implemented for dim==2 only.")
-
-            n = gmm_cfg["n_mixes"]
-            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
-            
-            # Determine mode arrangement
+            print(f"[DEBUG] Generating {gmm_cfg['mode_arrangement']} GMM modes for dim={gmm_cfg['dim']}")
+            # Use our new utility function to generate mode locations in any dimension
+            dim = gmm_cfg["dim"]
+            n_mixes = gmm_cfg["n_mixes"]
             mode_arrangement = gmm_cfg.get("mode_arrangement", "circle")
             
-            if mode_arrangement == "circle":
-                # Place modes evenly around a circle
-                radius = float(gmm_cfg.get("uniform_mode_radius", 3.0))
-                angles = torch.linspace(0, 2 * torch.pi, n + 1, device=device)[:-1]
-                locs = torch.stack((radius * torch.cos(angles), radius * torch.sin(angles)), dim=1)
-                
-            elif mode_arrangement == "grid":
-                # Place modes in a grid pattern
-                grid_x_range = gmm_cfg.get("grid_x_range", [-4.0, 4.0])
-                grid_y_range = gmm_cfg.get("grid_y_range", [-4.0, 4.0])
-                
-                # Use specified grid dimensions or calculate them automatically
-                if "grid_rows" in gmm_cfg and "grid_cols" in gmm_cfg:
-                    rows = int(gmm_cfg["grid_rows"])
-                    cols = int(gmm_cfg["grid_cols"])
-                else:
-                    # Automatically determine grid dimensions to be approximately square
-                    rows = int(np.ceil(np.sqrt(n)))
-                    cols = int(np.ceil(n / rows))
-                
-                # Generate grid positions
-                x_points = torch.linspace(grid_x_range[0], grid_x_range[1], cols, device=device)
-                y_points = torch.linspace(grid_y_range[0], grid_y_range[1], rows, device=device)
-                
-                # Create a mesh grid
-                grid_x, grid_y = torch.meshgrid(x_points, y_points, indexing='ij')
-                grid_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
-                
-                # If we have more grid positions than needed, take only the first n
-                if grid_positions.shape[0] > n:
-                    locs = grid_positions[:n]
-                else:
-                    # If we need more positions than the grid provides, duplicate some
-                    # This shouldn't normally happen if grid dimensions are specified correctly
-                    logger.warning(f"Grid dimensions ({rows}x{cols}={rows*cols}) don't provide enough positions for {n} modes. Some modes will overlap.")
-                    repeats_needed = int(np.ceil(n / grid_positions.shape[0]))
-                    repeated_positions = grid_positions.repeat(repeats_needed, 1)
-                    locs = repeated_positions[:n]
-            else:
-                raise ValueError(f"Unknown mode_arrangement: '{mode_arrangement}'. Use 'circle' or 'grid'.")
-
+            # Generate mode locations
+            locs = generate_gmm_modes(n_mixes, dim, mode_arrangement, gmm_cfg, device)
+            print(f"[DEBUG] Generated {locs.shape} mode locations")
             gmm.locs.copy_(locs)
-
+            
             # Isotropic covariance with specified scale
-            scale_tril = torch.diag(torch.full((gmm_cfg["dim"],), scale_val, device=device))
-            gmm.scale_trils.copy_(torch.stack([scale_tril] * n))
-
+            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
+            scale_tril = torch.diag(torch.full((dim,), scale_val, device=device))
+            gmm.scale_trils.copy_(torch.stack([scale_tril] * n_mixes))
+            
             # Uniform mixture weights
-            gmm.cat_probs.copy_(torch.full((n,), 1.0 / n, device=device))
+            gmm.cat_probs.copy_(torch.full((n_mixes,), 1.0 / n_mixes, device=device))
+    
+    print(f"[DEBUG] GMM created with dim={gmm.dim}, n_mixes={gmm.n_mixes}")
 
     # Temperatures
     t_low = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
     hi_gmm = gmm.tempered_version(t_high, scaling_method="sqrt")
+    print(f"[DEBUG] Created tempered GMM with T_low={t_low}, T_high={t_high}")
 
     # ───────────────────────────────────────────────────
     # 2. Dataset
     # ───────────────────────────────────────────────────
+    print(f"[DEBUG] Creating dataset...")
     tr_cfg = cfg["trainer"]["realnvp"]["training"]
     n_samples = tr_cfg.get("n_samples", 50_000)
+    print(f"[DEBUG] Generating {n_samples} data samples")
     dataset = TemperedGMMPairDataset(gmm,
                                      n_samples,
                                      temp_high=t_high,
@@ -204,11 +172,16 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     vloader = DataLoader(val_set,
                          batch_size=tr_cfg["batch_size"],
                          shuffle=False)
+    print(f"[DEBUG] Dataset created with {len(train_set)} training and {len(val_set)} validation samples")
 
     # ───────────────────────────────────────────────────
-    # 3. Model & optimiser
+    # 3. Model & optimiser - ensure dimension compatibility
     # ───────────────────────────────────────────────────
-    flow = create_realnvp_flow(cfg["trainer"]["realnvp"]["model"]).to(device)
+    print(f"[DEBUG] Creating RealNVP model...")
+    model_cfg = copy.deepcopy(cfg["trainer"]["realnvp"]["model"])
+    model_cfg["dim"] = gmm_cfg["dim"]  # Ensure the flow model uses the same dimension as GMM
+    flow = create_realnvp_flow(model_cfg).to(device)
+    print(f"[DEBUG] Created RealNVP flow with {model_cfg['n_couplings']} couplings, dim={model_cfg['dim']}, hidden_dim={model_cfg['hidden_dim']}")
     
     # Initialize weights with smaller values to improve numerical stability
     def init_weights(m):
@@ -239,12 +212,14 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
                          base_lr=initial_lr,
                          target_lr=learning_rate,
                          eta_min_factor=eta_min_factor)
+    print(f"[DEBUG] Optimizer and scheduler created")
 
     _init_wandb(cfg, gmm.locs.shape[0])
 
     # ───────────────────────────────────────────────────
     # 4. Training loop
     # ───────────────────────────────────────────────────
+    print(f"[DEBUG] Starting training loop: {max_epochs} epochs")
     best_loss = float("inf")
     best_state = None
     step_idx = 0
@@ -252,8 +227,14 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     for epoch in range(tr_cfg["n_epochs"]):
         flow.train()
         running = 0.0
+        print(f"[DEBUG] Starting epoch {epoch+1}/{max_epochs}")
+        
+        batch_count = 0
         for xb_hi, xb_lo in loader:
             xb_hi, xb_lo = xb_hi.to(device), xb_lo.to(device)
+            batch_count += 1
+            if batch_count % 10 == 0:
+                print(f"[DEBUG] Processing batch {batch_count}/{len(loader)}")
 
             # High→Low
             y_lo, ld_inv = flow.inverse(xb_hi)
@@ -306,6 +287,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
         train_loss = running / len(train_set)
 
         # ── validation
+        print(f"[DEBUG] Running validation for epoch {epoch+1}")
         flow.eval()
         with torch.no_grad():
             running = 0.0
@@ -335,13 +317,14 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
 
         logger.info(f"[{epoch+1}/{tr_cfg['n_epochs']}] "
                     f"train={train_loss:.4f}  val={val_loss:.4f}")
+        print(f"[DEBUG] Epoch {epoch+1}: train={train_loss:.4f}, val={val_loss:.4f}")
 
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = flow.state_dict()
-            torch.save(best_state,
-                       ckpt_dir /
-                       f"flow_{t_low:.2f}_to_{t_high:.2f}.pt")
+            checkpoint_path = ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+            torch.save(best_state, checkpoint_path)
+            print(f"[DEBUG] New best model saved to {checkpoint_path}")
 
         # early stop
         if best_loss == val_loss:
@@ -350,11 +333,13 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             patience_counter += 1
         if patience_counter >= int(tr_cfg["patience"]):
             logger.info("Early stopping.")
+            print("[DEBUG] Early stopping triggered")
             break
 
     # Save the best model, or the last one if no good model was found
     logger.info(f"Best val loss: {best_loss:.4f}")
     checkpoint_path = ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+    print(f"[DEBUG] Training completed, best val loss: {best_loss:.4f}")
 
     if best_state is not None:
         torch.save(best_state, checkpoint_path)
@@ -364,6 +349,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
         logger.warning("No valid checkpoint found - saving final model state")
         torch.save(flow.state_dict(), checkpoint_path)
     
+    print(f"[DEBUG] Final model saved to {checkpoint_path}")
     return checkpoint_path
 
 
@@ -384,3 +370,4 @@ if __name__ == "__main__":
         cfg["wandb"] = False
     ckpt_path = train_realnvp(cfg)
     print(f"✅ trained flow saved to {ckpt_path}")
+    

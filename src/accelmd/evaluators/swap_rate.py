@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import copy
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -13,6 +14,7 @@ import torch
 from src.accelmd.utils.config import load_config
 from src.accelmd.targets.gmm import GMM
 from src.accelmd.models.realnvp import create_realnvp_flow
+from src.accelmd.utils.gmm_modes import generate_gmm_modes
 
 # Try to import wandb, but make it optional
 try:
@@ -83,65 +85,22 @@ def _build_gmm_from_config(gmm_cfg: dict, device: torch.device) -> GMM:
                 gmm.cat_probs.copy_(torch.tensor(gmm_cfg["weights"], device=device))
                 logger.info("Applied custom GMM weights from config")
         else:
-            # Generate evenly-spaced modes on a circle (2-D specific)
-            if gmm_cfg.get("dim", 2) != 2:
-                raise ValueError("Uniform mode generation is currently implemented for dim==2 only.")
-
-            n = gmm_cfg.get("n_mixes", 5)
-            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
-            
-            # Determine mode arrangement
+            # Use the utility function to generate mode locations in any dimension
+            dim = gmm_cfg.get("dim", 2)
+            n_mixes = gmm_cfg.get("n_mixes", 5)
             mode_arrangement = gmm_cfg.get("mode_arrangement", "circle")
             
-            if mode_arrangement == "circle":
-                # Place modes evenly around a circle
-                radius = float(gmm_cfg.get("uniform_mode_radius", 3.0))
-                angles = torch.linspace(0, 2 * torch.pi, n + 1, device=device)[:-1]
-                locs = torch.stack((radius * torch.cos(angles), radius * torch.sin(angles)), dim=1)
-                
-            elif mode_arrangement == "grid":
-                # Place modes in a grid pattern
-                grid_x_range = gmm_cfg.get("grid_x_range", [-4.0, 4.0])
-                grid_y_range = gmm_cfg.get("grid_y_range", [-4.0, 4.0])
-                
-                # Use specified grid dimensions or calculate them automatically
-                if "grid_rows" in gmm_cfg and "grid_cols" in gmm_cfg:
-                    rows = int(gmm_cfg.get("grid_rows"))
-                    cols = int(gmm_cfg.get("grid_cols"))
-                else:
-                    # Automatically determine grid dimensions to be approximately square
-                    rows = int(np.ceil(np.sqrt(n)))
-                    cols = int(np.ceil(n / rows))
-                
-                # Generate grid positions
-                x_points = torch.linspace(grid_x_range[0], grid_x_range[1], cols, device=device)
-                y_points = torch.linspace(grid_y_range[0], grid_y_range[1], rows, device=device)
-                
-                # Create a mesh grid
-                grid_x, grid_y = torch.meshgrid(x_points, y_points, indexing='ij')
-                grid_positions = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=1)
-                
-                # If we have more grid positions than needed, take only the first n
-                if grid_positions.shape[0] > n:
-                    locs = grid_positions[:n]
-                else:
-                    # If we need more positions than the grid provides, duplicate some
-                    # This shouldn't normally happen if grid dimensions are specified correctly
-                    logger.warning(f"Grid dimensions ({rows}x{cols}={rows*cols}) don't provide enough positions for {n} modes. Some modes will overlap.")
-                    repeats_needed = int(np.ceil(n / grid_positions.shape[0]))
-                    repeated_positions = grid_positions.repeat(repeats_needed, 1)
-                    locs = repeated_positions[:n]
-            else:
-                raise ValueError(f"Unknown mode_arrangement: '{mode_arrangement}'. Use 'circle' or 'grid'.")
-                
+            # Generate mode locations
+            locs = generate_gmm_modes(n_mixes, dim, mode_arrangement, gmm_cfg, device)
             gmm.locs.copy_(locs)
             
             # Isotropic covariance with specified scale
-            scale_tril = torch.diag(torch.full((2,), scale_val, device=device))
-            gmm.scale_trils.copy_(torch.stack([scale_tril] * n))
+            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
+            scale_tril = torch.diag(torch.full((dim,), scale_val, device=device))
+            gmm.scale_trils.copy_(torch.stack([scale_tril] * n_mixes))
             
             # Uniform mixture weights
-            gmm.cat_probs.copy_(torch.full((n,), 1.0 / n, device=device))
+            gmm.cat_probs.copy_(torch.full((n_mixes,), 1.0 / n_mixes, device=device))
 
     return gmm
 
@@ -219,7 +178,9 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
     logger.info(f"Loading RealNVP weights from {ckpt_path}")
 
     # Model architecture comes from trainer-section of config
-    model_cfg = cfg.get("trainer", {}).get("realnvp", {}).get("model", {})
+    # Ensure the flow uses the same dimension as the GMM
+    model_cfg = copy.deepcopy(cfg.get("trainer", {}).get("realnvp", {}).get("model", {}))
+    model_cfg["dim"] = gmm.dim
     flow = create_realnvp_flow(model_cfg).to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
     # Handle checkpoints that store a dict vs plain state_dict
@@ -335,6 +296,7 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # 1) Load config & set up directories (cfg already loaded by caller)
     # ------------------------------------------------------------------
     # cfg is already provided
+    print(f"[DEBUG] Starting swap-rate evaluation")
 
     # Initialize wandb if enabled
     _init_wandb(cfg)
@@ -344,12 +306,14 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     if device.type == "cuda" and not torch.cuda.is_available():
         logger.warning("CUDA requested but not available – falling back to CPU")
         device = torch.device("cpu")
+    print(f"[DEBUG] Using device: {device}")
 
     pt_cfg = cfg["pt"]
     t_low, t_high = float(pt_cfg["temp_low"]), float(pt_cfg["temp_high"])
     n_steps = int(pt_cfg["num_steps"])
     swap_interval = int(pt_cfg["swap_interval"])
     n_attempts = max(1, n_steps // swap_interval)
+    print(f"[DEBUG] Config: T_low={t_low}, T_high={t_high}, n_steps={n_steps}, n_attempts={n_attempts}")
 
     # Output directories
     eval_cfg = cfg["evaluator"]
@@ -359,19 +323,31 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 2) Build targets & (optionally) flow model
     # ------------------------------------------------------------------
+    print(f"[DEBUG] Building GMM for dimension {cfg['gmm']['dim']}")
     gmm = _build_gmm_from_config(cfg["gmm"], device)
     hi_gmm = gmm.tempered_version(t_high)
+    print(f"[DEBUG] GMM built with {gmm.n_mixes} modes")
 
     # Flow model (may raise if checkpoint not found)
-    flow = _attempt_load_flow(cfg, device, gmm)
+    print(f"[DEBUG] Loading flow model")
+    try:
+        flow = _attempt_load_flow(cfg, device, gmm)
+        print(f"[DEBUG] Flow model loaded successfully")
+    except Exception as e:
+        print(f"[DEBUG] Error loading flow model: {str(e)}")
+        raise
 
     # ------------------------------------------------------------------
     # 3) Run the experiment – generate acceptance histories
     # ------------------------------------------------------------------
+    print(f"[DEBUG] Running swap experiments for {n_attempts} attempts")
     naive_hist: List[int] = []
     flow_hist: List[int] = []
 
-    for _ in range(n_attempts):
+    for i in range(n_attempts):
+        if i % 100 == 0:
+            print(f"[DEBUG] Swap attempt {i+1}/{n_attempts}")
+            
         # Draw *fresh* samples from each tempered distribution to mimic well-mixed PT chains
         x_low = gmm.sample((1,)).to(device)
         x_high = hi_gmm.sample((1,)).to(device)
@@ -390,6 +366,7 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
 
     naive_rate = float(np.mean(naive_hist))
     flow_rate = float(np.mean(flow_hist))
+    print(f"[DEBUG] Completed swap experiments. Naive rate: {naive_rate:.4f}, Flow rate: {flow_rate:.4f}")
 
     # Log to wandb
     if WANDB_AVAILABLE and cfg.get("wandb", False):
@@ -428,6 +405,7 @@ Swap Pair   |  Naive PT  |  Flow-based T-GePT
     with open(json_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
     logger.info("Wrote summary to %s", json_path)
+    print(f"[DEBUG] Wrote results to {json_path}")
 
     # Log a table to wandb
     if WANDB_AVAILABLE and cfg.get("wandb", False):

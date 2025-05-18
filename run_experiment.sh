@@ -37,7 +37,7 @@ mkdir -p logs
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Configuration file (point to your YAML in configs/pt)
-CONFIG="${CONFIG:-configs/gmm.yaml}"
+CONFIG="${CONFIG:-configs/gmm5d.yaml}"
 
 # Display GPU info
 nvidia-smi

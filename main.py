@@ -55,7 +55,10 @@ def _experiment_dir(cfg: Dict[str, Any]) -> Path:
 # TRAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: Path):
-    """Re-use the logic from scripts/train.py to make the 2×2 sanity figure."""
+    """Re-use the logic from scripts/train.py to make the 2×2 sanity figure.
+    
+    For dimensions higher than 2, only the first two dimensions are shown in the plot.
+    """
     import matplotlib.pyplot as plt  # local import keeps CLI snappy
 
     device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
@@ -69,7 +72,9 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     hi_gmm = gmm.tempered_version(t_high, scaling_method="sqrt")
 
     # --- load flow -----------------------------------------------------------
-    flow = create_realnvp_flow(cfg["trainer"]["realnvp"]["model"]).to(device)
+    model_cfg = copy.deepcopy(cfg["trainer"]["realnvp"]["model"])
+    model_cfg["dim"] = gmm_cfg["dim"]  # Ensure dimension compatibility
+    flow = create_realnvp_flow(model_cfg).to(device)
     flow.load_state_dict(torch.load(ckpt_path, map_location=device))
     flow.eval()
 
@@ -83,6 +88,7 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
 
     # --- figure --------------------------------------------------------------
     def _scatter(ax, pts, title):
+        # For higher dimensions, only plot the first two dimensions
         ax.scatter(pts[:, 0], pts[:, 1], s=4, alpha=.6)
         ax.set_title(title)
         ax.set_xlim(-7, 7); ax.set_ylim(-7, 7); ax.grid(alpha=.3)
@@ -101,28 +107,35 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
 
 def _train(cfg: Dict[str, Any], exp_dir: Path):
     """Run training (if not already cached) and copy artefacts into *exp_dir*."""
+    print(f"[DEBUG MAIN] Starting training phase")
     t_low  = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
     ckpt_expected = exp_dir / "model.pt"
 
     if ckpt_expected.is_file():
         _LOG.info("Model checkpoint already present – skipping training.")
+        print(f"[DEBUG MAIN] Using existing model checkpoint: {ckpt_expected}")
     else:
+        print(f"[DEBUG MAIN] No checkpoint found at {ckpt_expected}, running training...")
         ckpt_path = train_realnvp(cfg)          # does the heavy lifting
         shutil.copy2(ckpt_path, ckpt_expected)  # standardised name inside outputs/
         _LOG.info("Checkpoint copied to %s", ckpt_expected)
+        print(f"[DEBUG MAIN] Training completed, checkpoint saved to {ckpt_expected}")
 
     # Always (re-)create the sanity scatter so that plots/ is complete
+    print(f"[DEBUG MAIN] Generating bidirectional verification plot")
     _generate_bidirectional_plot(
         cfg,
         ckpt_expected,
         exp_dir / "plots" / "bidirectional_verification.png",
     )
+    print(f"[DEBUG MAIN] Bidirectional verification plot generated")
 
     # Store a verbatim copy of the YAML that was *actually* used
     with open(exp_dir / "config.yaml", "w", encoding="utf-8") as fp:
         yaml.safe_dump(cfg, fp)
     _LOG.info("Config snapshot written.")
+    print(f"[DEBUG MAIN] Training phase completed")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,17 +143,22 @@ def _train(cfg: Dict[str, Any], exp_dir: Path):
 # ─────────────────────────────────────────────────────────────────────────────
 def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
     """Run swap-rate + metrics and collate outputs inside *exp_dir*."""
+    print(f"[DEBUG MAIN] Starting evaluation phase")
     # We point the evaluator sub-modules *into*   outputs/<name>/…
     cfg_eval = copy.deepcopy(cfg)  # avoid polluting the original dict
     cfg_eval["evaluator"]["plot_dir"]   = str(exp_dir / "plots")
     cfg_eval["evaluator"]["results_dir"] = str(exp_dir)
 
     # -- 1) swap-rate (produces JSON summary) -------------------------------
+    print(f"[DEBUG MAIN] Running swap-rate evaluation")
     swap_rate.run(cfg_eval)
+    print(f"[DEBUG MAIN] Swap-rate evaluation completed")
 
     # -- 2) metrics (two extra PNGs) ----------------------------------------
+    print(f"[DEBUG MAIN] Running metrics")
     acceptance_autocorrelation.run(cfg_eval)
     moving_average_acceptance.run(cfg_eval)
+    print(f"[DEBUG MAIN] Metrics calculation completed")
 
     # -- 3) copy / rename JSON → metrics.json -------------------------------
     from src.accelmd.evaluators.swap_rate import _pair_suffix
@@ -149,6 +167,8 @@ def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
     json_dst = exp_dir / "metrics.json"
     shutil.copy2(json_src, json_dst)
     _LOG.info("Metrics aggregated → %s", json_dst)
+    print(f"[DEBUG MAIN] Metrics aggregated to {json_dst}")
+    print(f"[DEBUG MAIN] Evaluation phase completed")
 
 
 # --------------------------------------------------------------------------- #
@@ -169,8 +189,12 @@ def main() -> None:
     if not (args.train or args.evaluate or args.run_all):
         p.error("Please specify --train, --evaluate or --run-all.")
 
+    print(f"[DEBUG MAIN] Loading config from {args.config}")
     cfg = load_config(args.config)
     exp_dir = _experiment_dir(cfg)
+    print(f"[DEBUG MAIN] Experiment directory: {exp_dir}")
+    
+    print(f"[DEBUG MAIN] Running with options: train={args.train}, evaluate={args.evaluate}, run-all={args.run_all}")
 
     if args.run_all:
         _train(cfg, exp_dir)
@@ -179,6 +203,8 @@ def main() -> None:
         _train(cfg, exp_dir)
     elif args.evaluate:
         _evaluate(cfg, exp_dir)
+    
+    print(f"[DEBUG MAIN] Experiment completed successfully")
 
 
 if __name__ == "__main__":
