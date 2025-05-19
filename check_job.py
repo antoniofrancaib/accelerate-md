@@ -1,188 +1,164 @@
 #!/usr/bin/env python
 """
-Utility script to check the status of a running job.
-This helps diagnose jobs that appear to be hanging.
+Utility script to check the status of GMM experiment jobs.
+This is helpful for diagnosing issues with high-dimensional GMM experiments.
 
 Usage:
-    python check_job.py JOB_ID
-
-Example:
-    python check_job.py 9517188
+    python check_job.py --job-id JOB_ID [--tail LINES]
 """
 
-import sys
-import subprocess
+import argparse
 import os
+import subprocess
+import sys
 from pathlib import Path
 import re
+import time
 
-def run_cmd(cmd):
-    """Run a shell command and return output as string."""
-    return subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-
-def check_gpu_usage(job_id):
-    """Check if the job is using GPU."""
+def get_job_status(job_id):
+    """Get the status of a job from Slurm."""
     try:
-        # Get the node where the job is running
-        node_info = run_cmd(f"squeue -j {job_id} -o %N")
-        
-        # Check if we have an actual node or just the header
-        if "NODELIST" in node_info:
-            lines = node_info.split('\n')
-            if len(lines) <= 1:
-                print("Job is pending - no node assigned yet")
-                return
-            node = lines[1]
-        else:
-            # Sometimes squeue doesn't return the header
-            if node_info == "(Priority)" or node_info == "(Resources)" or node_info == "":
-                print("Job is pending - no node assigned yet")
-                return
-            node = node_info
-        
-        print(f"Job is running on node: {node}")
-        
-        # Check if we can ssh to the node
-        ssh_test = run_cmd(f"ssh {node} echo 'OK' 2>/dev/null || echo 'Failed'")
-        if ssh_test == "Failed":
-            print("Cannot connect to node directly, skipping GPU check")
-            return
-            
-        # Check GPU usage on that node for your user
-        gpu_usage = run_cmd(f"ssh {node} 'nvidia-smi --query-compute-apps=pid,used_memory --format=csv'")
-        print("GPU Usage:")
-        print(gpu_usage)
-        
-        # Get PIDs for the job
-        job_pids = run_cmd(f"ssh {node} 'ps -u $USER -o pid,ppid,pcpu,pmem,cmd | grep {job_id}'")
-        print("\nProcesses for this job:")
-        print(job_pids)
-        
+        result = subprocess.run(
+            ["squeue", "-j", str(job_id), "-o", "%T"],
+            capture_output=True, text=True, check=True
+        )
+        lines = result.stdout.strip().split('\n')
+        if len(lines) > 1:
+            return lines[1]  # First line is header
+        return "NOT FOUND"
     except subprocess.CalledProcessError:
-        print("Could not check GPU usage")
-    except Exception as e:
-        print(f"Error checking GPU usage: {str(e)}")
+        return "ERROR"
 
-def check_log_progress(job_id):
-    """Check the progress by analyzing job output files."""
-    log_files = list(Path("logs").glob(f"*{job_id}*"))
-    if not log_files:
-        print("No log files found for this job ID")
+def tail_log_file(log_path, lines=50):
+    """Show the last N lines of a log file."""
+    if not os.path.exists(log_path):
+        print(f"Log file not found: {log_path}")
         return
-        
-    print(f"\nFound {len(log_files)} log files: {[f.name for f in log_files]}")
-    
-    # Check each log file
-    for log_file in log_files:
-        if log_file.stat().st_size == 0:
-            print(f"{log_file} is empty")
-            continue
-            
-        print(f"\nAnalyzing {log_file}:")
-        try:
-            # Read last 20 lines for a quick overview
-            last_lines = run_cmd(f"tail -n 20 {log_file}")
-            print("\nLast few lines:")
-            print(last_lines)
-            
-            # Check for debug messages that indicate progress
-            with open(log_file, 'r') as f:
-                content = f.read()
-                
-            # Look for debug messages
-            debug_msgs = re.findall(r'\[DEBUG.*?\].*', content)
-            if debug_msgs:
-                print(f"\nFound {len(debug_msgs)} debug messages")
-                print("Last 5 debug messages:")
-                for msg in debug_msgs[-5:]:
-                    print(msg)
-                
-                # If job is in training phase, check epoch progress
-                epoch_msgs = re.findall(r'\[DEBUG.*?\] Epoch (\d+)', content)
-                if epoch_msgs:
-                    last_epoch = epoch_msgs[-1]
-                    print(f"\nTraining progress: Last epoch is {last_epoch}")
-                
-                # Check if job is in evaluation phase
-                eval_msgs = [msg for msg in debug_msgs if "evaluation" in msg.lower()]
-                if eval_msgs:
-                    print("\nJob reached evaluation phase:")
-                    for msg in eval_msgs:
-                        print(msg)
-        except Exception as e:
-            print(f"Error analyzing log file: {e}")
 
-def check_output_files(job_id):
-    """Check if the job has created any output files."""
     try:
-        # Look for output directories that might have been created
-        output_dirs = list(Path("outputs").glob("*"))
-        if not output_dirs:
-            print("\nNo output directories found")
-            return
-            
-        print("\nOutput directories:")
-        for dir_path in output_dirs:
-            if dir_path.is_dir():
-                files = list(dir_path.glob("**/*"))
-                file_count = len(files)
-                dir_size = sum(f.stat().st_size for f in files if f.is_file())
-                last_modified = max([f.stat().st_mtime for f in files], default=0) if files else 0
-                
-                print(f"- {dir_path}: {file_count} files, {dir_size/1024/1024:.2f} MB, " + 
-                      (f"last modified: {run_cmd(f'date -d @{int(last_modified)}')})" if last_modified else "empty"))
-                
-                # List a few sample files
-                if files:
-                    print("  Sample files:")
-                    for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:5]:
-                        print(f"  - {f.relative_to(dir_path)}: {f.stat().st_size/1024:.1f} KB")
+        result = subprocess.run(
+            ["tail", "-n", str(lines), log_path],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError:
+        return "Error reading log file"
+
+def find_gmm_config(job_id):
+    """Try to find the GMM config file used for this job."""
+    # Look for a slurm script that might reference the config
+    slurm_script = Path(f"slurm-{job_id}.out")
+    if slurm_script.exists():
+        with open(slurm_script, 'r') as f:
+            content = f.read()
+            # Look for config file reference
+            match = re.search(r'--config\s+(\S+)', content)
+            if match:
+                return match.group(1)
+    
+    # Look in job output for config references
+    stderr_path = Path(f"logs/gmm_experiment_{job_id}.err")
+    stdout_path = Path(f"logs/gmm_experiment_{job_id}.out")
+    
+    for log_path in [stderr_path, stdout_path]:
+        if log_path.exists():
+            with open(log_path, 'r') as f:
+                content = f.read()
+                # Look for config file reference
+                match = re.search(r'Config:\s+(\S+)', content)
+                if match:
+                    return match.group(1)
+    
+    return "Unknown"
+
+def check_for_stuck_job(stdout_path, stderr_path):
+    """Check if the job appears to be stuck based on log outputs."""
+    if not os.path.exists(stdout_path) and not os.path.exists(stderr_path):
+        return "No log files found - job may be queued or not started"
+    
+    # Check when the logs were last modified
+    try:
+        stdout_time = os.path.getmtime(stdout_path) if os.path.exists(stdout_path) else 0
+        stderr_time = os.path.getmtime(stderr_path) if os.path.exists(stderr_path) else 0
+        last_update = max(stdout_time, stderr_time)
+        time_since_update = time.time() - last_update
+        
+        if time_since_update > 3600:  # More than an hour
+            return f"Warning: No log updates for {time_since_update/3600:.1f} hours - job may be stuck"
     except Exception as e:
-        print(f"Error checking output files: {e}")
+        return f"Error checking file times: {e}"
+    
+    # Check for common stuck patterns in the logs
+    patterns = [
+        "Creating dataset",
+        "Generating random GMM modes",
+        "Starting to sample",
+        "Dataset created with",
+    ]
+    
+    last_lines = {}
+    for path in [stdout_path, stderr_path]:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                lines = f.readlines()
+                last_lines[path] = lines[-20:] if len(lines) >= 20 else lines
+    
+    for pattern in patterns:
+        for path, lines in last_lines.items():
+            for line in reversed(lines):
+                if pattern in line:
+                    return f"Job may be stuck at: {line.strip()}"
+    
+    return "No obvious signs of being stuck"
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} JOB_ID")
-        sys.exit(1)
-        
-    job_id = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Check GMM experiment job status")
+    parser.add_argument("--job-id", type=str, required=True, help="Slurm job ID")
+    parser.add_argument("--tail", type=int, default=20, help="Number of log lines to show")
+    args = parser.parse_args()
     
-    print(f"Checking status of job {job_id}")
+    job_id = args.job_id
     
-    # Check if job is running
-    try:
-        job_status = run_cmd(f"squeue -j {job_id} -o %T")
-        if "STAT" in job_status:  # Header row
-            lines = job_status.split('\n')
-            if len(lines) <= 1:
-                print("Job not found - it may have completed or been cancelled")
-                status = "NOT_FOUND"
-            else:
-                status = lines[1]
-        else:
-            status = job_status
-            
-        print(f"Job status: {status}")
-        
-        if status not in ["RUNNING", "PENDING", "COMPLETING"]:
-            print(f"Job is not currently running (status: {status})")
-            
-            # For completed jobs, check the output
-            if status == "NOT_FOUND":
-                print("Checking for job output files...")
-    except Exception as e:
-        print(f"Error checking job status: {str(e)}")
-        status = "ERROR"
-        
-    # Check GPU usage if job is running
-    if status in ["RUNNING", "COMPLETING"]:
-        check_gpu_usage(job_id)
+    print(f"==== Checking GMM experiment job {job_id} ====")
     
-    # Check logs (useful even if job is not running anymore)
-    check_log_progress(job_id)
+    # Check job status
+    status = get_job_status(job_id)
+    print(f"Job status: {status}")
     
-    # Check output files
-    check_output_files(job_id)
+    # Find config file
+    config_file = find_gmm_config(job_id)
+    print(f"Config file: {config_file}")
+    
+    # Check log files
+    stdout_path = f"logs/gmm_experiment_{job_id}.out"
+    stderr_path = f"logs/gmm_experiment_{job_id}.err"
+    
+    # Check if job is stuck
+    stuck_status = check_for_stuck_job(stdout_path, stderr_path)
+    print(f"Status check: {stuck_status}")
+    
+    # Show tail of logs
+    print(f"\n==== Last {args.tail} lines of stdout ====")
+    stdout_tail = tail_log_file(stdout_path, args.tail)
+    if stdout_tail:
+        print(stdout_tail)
+    
+    print(f"\n==== Last {args.tail} lines of stderr ====")
+    stderr_tail = tail_log_file(stderr_path, args.tail)
+    if stderr_tail:
+        print(stderr_tail)
+    
+    print("\n==== Recommendations ====")
+    if status == "RUNNING" and "stuck" in stuck_status.lower():
+        print("- Your job may be stuck. Consider canceling with 'scancel {job_id}' and fixing the issue.")
+        print("- For high-dimensional GMMs, try reducing n_mixes or using 'random' mode_arrangement.")
+        print("- Check memory usage, as high dimensionality increases memory requirements.")
+    elif status == "PENDING":
+        print("- Job is still pending. Check resource requirements with 'squeue -j {job_id} -o %all'")
+    elif "NOT FOUND" in status:
+        print("- Job has completed or was cancelled. Check the log files for any errors.")
+    
+    print("==== End of report ====")
 
 if __name__ == "__main__":
     main() 

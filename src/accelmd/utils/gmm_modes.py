@@ -24,9 +24,15 @@ def generate_gmm_modes(n_mixes, dim, arrangement, cfg, device):
     """
     if arrangement == "grid":
         if dim == 2:
-            # Use original 2D grid logic for backward compatibility
-            grid_x_range = cfg.get("grid_x_range", [-4.0, 4.0])
-            grid_y_range = cfg.get("grid_y_range", [-4.0, 4.0])
+            # For backward compatibility, check for old x/y parameters first
+            if "grid_x_range" in cfg and "grid_y_range" in cfg:
+                grid_x_range = cfg.get("grid_x_range", [-4.0, 4.0])
+                grid_y_range = cfg.get("grid_y_range", [-4.0, 4.0])
+            else:
+                # Otherwise use the unified grid_range
+                grid_range = cfg.get("grid_range", [-4.0, 4.0])
+                grid_x_range = grid_range
+                grid_y_range = grid_range
             
             # Use specified grid dimensions or calculate them automatically
             if "grid_rows" in cfg and "grid_cols" in cfg:
@@ -73,11 +79,24 @@ def generate_gmm_modes(n_mixes, dim, arrangement, cfg, device):
             # This is instead of creating a full meshgrid which would be too large
             locs = torch.zeros((n_mixes, dim), device=device)
             
-            # Create coordinate arrays for each dimension
+            # Get the grid range - a common range for all dimensions
+            grid_range = cfg.get("grid_range", [-4.0, 4.0])
+            
+            # Create coordinate arrays for each dimension using the same range
             dim_arrays = []
             for d in range(dim):
+                # Check for legacy dimension-specific ranges (for backward compatibility)
                 range_key = f"grid_dim{d}_range"
-                dim_range = cfg.get(range_key, [-4.0, 4.0])
+                if d == 0 and "grid_x_range" in cfg:
+                    dim_range = cfg.get("grid_x_range", grid_range)
+                elif d == 1 and "grid_y_range" in cfg:
+                    dim_range = cfg.get("grid_y_range", grid_range)
+                elif range_key in cfg:
+                    dim_range = cfg.get(range_key, grid_range)
+                else:
+                    # Default to the unified grid_range
+                    dim_range = grid_range
+                
                 dim_arrays.append(torch.linspace(dim_range[0], dim_range[1], points_per_dim, device=device))
             
             # Fill with selected grid points - either take all available points or sample randomly

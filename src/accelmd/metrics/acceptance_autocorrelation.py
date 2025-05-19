@@ -98,8 +98,14 @@ def _autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
     f = np.fft.rfft(x, n=fft_len)
     acf = np.fft.irfft(f * np.conjugate(f))[: n]  # length n
     acf /= x_var * np.arange(n, 0, -1)
-
-    return acf[: max_lag + 1]
+    
+    # Make sure we return exactly max_lag+1 values
+    # If ACF is too short, pad with zeros; if too long, truncate
+    result = np.zeros(max_lag + 1)
+    actual_len = min(len(acf), max_lag + 1)
+    result[:actual_len] = acf[:actual_len]
+    
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +127,15 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
 
     acf_naive = _autocorrelation(na_arr, L)
     acf_flow = _autocorrelation(fl_arr, L)
+
+    # Ensure arrays have the expected lengths
+    if len(acf_naive) != L + 1:
+        logger.warning(f"Naive ACF length mismatch: expected {L+1}, got {len(acf_naive)}")
+        acf_naive = np.pad(acf_naive, (0, max(0, L + 1 - len(acf_naive))))[:L+1]
+
+    if len(acf_flow) != L + 1:
+        logger.warning(f"Flow ACF length mismatch: expected {L+1}, got {len(acf_flow)}")
+        acf_flow = np.pad(acf_flow, (0, max(0, L + 1 - len(acf_flow))))[:L+1]
 
     iact_naive = 1.0 + 2.0 * acf_naive[1:].sum()
     iact_flow = 1.0 + 2.0 * acf_flow[1:].sum()
@@ -153,6 +168,15 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     lags = np.arange(L + 1)
     plt.figure(figsize=(6, 4))
+    
+    # Make sure arrays have the same lengths before plotting
+    min_len = min(len(lags), len(acf_naive), len(acf_flow))
+    if min_len < len(lags):
+        logger.warning(f"Truncating lags array from {len(lags)} to {min_len}")
+        lags = lags[:min_len]
+        acf_naive = acf_naive[:min_len]
+        acf_flow = acf_flow[:min_len]
+    
     plt.stem(lags, acf_naive, label="Naive PT", linefmt="tab:blue", markerfmt=" ")
     plt.stem(lags, acf_flow, label="Flow-based PT", linefmt="tab:orange", markerfmt=" ")
     plt.xlabel("Lag ℓ")

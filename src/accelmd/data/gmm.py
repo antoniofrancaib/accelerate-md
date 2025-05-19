@@ -29,10 +29,19 @@ class TemperedGMMPairDataset(Dataset):
         # Create a high-temperature version of the GMM using the tempered_version method
         hi_temp_gmm = gmm.tempered_version(temp_high, temp_scaling_method)
         
+        # Add debug prints for tracking progress in higher dimensions
+        dim = gmm.dim
+        logger.info(f"Creating dataset for {dim}D GMM with {n_samples} samples")
+        print(f"[DEBUG] Starting to sample {n_samples} points from high-temp GMM (dim={dim})...")
+        
         # Sample from both distributions
         with torch.no_grad():
             self.hi_temp_samples = hi_temp_gmm.sample((n_samples,)).float()
+            print(f"[DEBUG] High-temp samples created with shape {self.hi_temp_samples.shape}")
+            
+            print(f"[DEBUG] Starting to sample {n_samples} points from low-temp GMM...")
             self.low_temp_samples = gmm.sample((n_samples,)).float()
+            print(f"[DEBUG] Low-temp samples created with shape {self.low_temp_samples.shape}")
         
         logger.info(f"Created dataset with {n_samples} sample pairs from T={temp_high:.4f} to T={temp_low:.4f} using '{self.temp_scaling_method}' scaling")
     

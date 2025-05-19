@@ -1,43 +1,39 @@
 # -----------------------------------------------------------------------------
-# Experiment: Extreme‐swap acceptance on 5D GMM + RealNVP flows
+# Experiment: Extreme‐swap acceptance on 60D GMM + RealNVP flows
 # -----------------------------------------------------------------------------
-name: "gmm5_grid_5d"
+name: "gmm60d_40m_grid"
 device: "cuda"
 
 # -----------------------------------------------------------------------------
 # 1) GMM target distribution settings
 # -----------------------------------------------------------------------------
 gmm:
-  dim: 5                      # 5D Gaussian Mixture Model
-  n_mixes: 16
+  dim: 60                     # 60D Gaussian Mixture Model
+  n_mixes: 40                  # Reduced for higher dimension
   loc_scaling: 6.0
 
-  custom_modes: false          # use generated modes
-  mode_arrangement: "grid"    # "circle", "grid", or "random"
+  custom_modes: false
+  mode_arrangement: "random"  # For very high dimensions, random is more reliable
   
-  # Grid arrangement parameters (when mode_arrangement = "grid")
-  grid_x_range: [-6.0, 6.0]    # min and max for dimension 0
-  grid_y_range: [-6.0, 6.0]    # min and max for dimension 1
-  grid_dim2_range: [-6.0, 6.0] # min and max for dimension 2
-  grid_dim3_range: [-6.0, 6.0] # min and max for dimension 3
-  grid_dim4_range: [-6.0, 6.0] # min and max for dimension 4
+  # Unified range for all dimensions
+  grid_range: [-6.0, 6.0]
   
   # Common parameters for non-custom modes
-  uniform_mode_scale: 0.18    # isotropic std-dev for all components
+  uniform_mode_scale: 0.2     # isotropic std-dev for all components
 
 # -----------------------------------------------------------------------------
 # 2) Parallel Tempering settings (naive & flow‐based share these)
 # -----------------------------------------------------------------------------
 pt:
   temp_low: 1.0
-  temp_high: 10.0
+  temp_high: 5.0
   total_n_temp: 2
-  temp_schedule: "geom"     # "geom" or "linear"
+  temp_schedule: "geom"
   num_chains: 1
-  num_steps: 100000
-  burn_in:   1000
+  num_steps: 10000            # Reduced for quick testing
+  burn_in:   500
   swap_interval: 100
-  check_interval: 1000
+  check_interval: 500
   step_size: 0.0001
 
 # -----------------------------------------------------------------------------
@@ -46,36 +42,36 @@ pt:
 trainer:
   realnvp:
     # where to save each temperature‐pair flow
-    checkpoint_dir: "checkpoints/realnvp_gmm5d"
+    checkpoint_dir: "checkpoints/realnvp_gmm60d"
 
     # model architecture
     model:
-      dim:           5         # should match gmm.dim (will be automatically updated)
-      hidden_dim:    512       # increased for higher dimensions
-      n_couplings:   50        # more coupling layers for higher dimensions
+      dim:           60       # Will be automatically synced with gmm.dim
+      hidden_dim:    512     # Larger for higher dimensions
+      n_couplings:   60       # One per dimension is a good rule of thumb
       use_permutation: true
 
     # optimization
     training:
-      n_epochs:        120
-      batch_size:      1024
-      learning_rate:  5e-5
-      initial_lr:     1e-5
-      max_grad_norm:  5.0
-      warmup_epochs:   10
-      eta_min_factor:  0.05
-      patience:       20
-      val_split:      0.10
-      n_samples:     200000
+      n_epochs:        120     # Reduced for quick testing
+      batch_size:      256    # Smaller batch size due to higher memory usage
+      learning_rate:  1e-5    # Reduced for stability in higher dimensions
+      initial_lr:     5e-6
+      max_grad_norm:  1.0     # More conservative gradient clipping
+      warmup_epochs:   3
+      eta_min_factor:  0.1
+      patience:       5
+      val_split:      0.1
+      n_samples:     5000     # Reduced for memory efficiency
       seed:           42
-      mse_weight:     0.05
+      mse_weight:     0.01    # Reduced to focus on likelihood
 
 # -----------------------------------------------------------------------------
 # 4) Evaluation & I/O
 # -----------------------------------------------------------------------------
 evaluator:
   # where to read the flows you just trained
-  checkpoint_dir: "checkpoints/realnvp_gmm5d"
+  checkpoint_dir: "checkpoints/realnvp_gmm60d"
 
   # where to dump plots & summary JSON
   plot_dir:    "plots/pt"
