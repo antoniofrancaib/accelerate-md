@@ -1,8 +1,6 @@
 This is the repository for the MLMI MPhil project: Accelerating Molecular Dynamics.
 
-🧬 Tutorial notebook to get started: ### 🚀 Open in Colab
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb)
+🧬 Tutorial notebook to get started: [Introductory notebook](https://github.com/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb) &nbsp; [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb)
 
 
 ### Clone the Repository
