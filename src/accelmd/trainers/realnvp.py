@@ -302,7 +302,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = flow.state_dict()
-            checkpoint_path = ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+            checkpoint_path = Path(cfg["output"]["model_path"])
             torch.save(best_state, checkpoint_path)
             print(f"[DEBUG] New best model saved to {checkpoint_path}")
 
@@ -318,7 +318,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
 
     # Save the best model, or the last one if no good model was found
     logger.info(f"Best val loss: {best_loss:.4f}")
-    checkpoint_path = ckpt_dir / f"flow_{t_low:.2f}_to_{t_high:.2f}.pt"
+    checkpoint_path = Path(cfg["output"]["model_path"])
     print(f"[DEBUG] Training completed, best val loss: {best_loss:.4f}")
 
     if best_state is not None:

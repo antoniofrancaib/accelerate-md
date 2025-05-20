@@ -77,15 +77,23 @@ def derive_output_paths(cfg: dict) -> dict:
     name    = cfg["name"]
     pt_cfg  = cfg["pt"]
     base    = Path(cfg.get("output", {}).get("base_dir", "outputs")) / name
+    
+    # Format temperatures for filenames
+    t_low = float(pt_cfg["temp_low"])
+    t_high = float(pt_cfg["temp_high"])
+    
+    # Use the same naming pattern as in the trainer
+    model_type = cfg.get("model_type", "realnvp")
+    prefix = "flow" if model_type == "realnvp" else "tarflow"
+    model_filename = f"{prefix}_{t_low:.2f}_to_{t_high:.2f}.pt"
 
     paths = {
         "base_dir":    str(base),
         "checkpoints": str(base/"checkpoints"),
         "plots_dir":   str(base/"plots"),
         "results_dir": str(base/"results"),
-        "logs_dir":    str(base/"logs"),
-        "log_file":    str(base/"logs"/"experiment.log"),
-        "model_path":  str(base/"model.pt"),
+        "log_file":    str(base/"experiment.log"),
+        "model_path":  str(base/"checkpoints"/model_filename),
         "config_copy": str(base/"config.yaml"),
     }
 

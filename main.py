@@ -44,15 +44,6 @@ TRAINER_REGISTRY = {
 # --------------------------------------------------------------------------- #
 _LOG = logging.getLogger(__name__)
 
-def _experiment_dir(cfg: Dict[str, Any]) -> Path:
-    """Compute  …/outputs/<experiment-name>  (create if necessary)."""
-    name      = cfg["name"]
-    base_dir  = cfg.get("output", {}).get("base_dir", "outputs")
-    exp_dir   = Path(base_dir) / name
-    (exp_dir / "plots").mkdir(parents=True, exist_ok=True)
-    (exp_dir / "logs").mkdir(exist_ok=True)
-    return exp_dir
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRAIN
@@ -108,11 +99,11 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     _LOG.info("Bidirectional verification figure saved → %s", out_png)
 
 
-def _train(cfg: Dict[str, Any], exp_dir: Path, target):
-    """Run training (if not already cached) and copy artefacts into *exp_dir*."""
+def _train(cfg: Dict[str, Any], target):
+    """Run training (if not already cached)."""
     print(f"[DEBUG MAIN] Starting training phase")
-    t_low  = float(cfg["pt"]["temp_low"])
-    t_high = float(cfg["pt"]["temp_high"])
+    
+    # The checkpoint path is now consistent with what trainers produce
     ckpt_expected = Path(cfg["output"]["model_path"])
 
     if ckpt_expected.is_file():
@@ -122,9 +113,8 @@ def _train(cfg: Dict[str, Any], exp_dir: Path, target):
         print(f"[DEBUG MAIN] No checkpoint found at {ckpt_expected}, running training...")
         trainer = TRAINER_REGISTRY[cfg.get("model_type", "realnvp")]
         ckpt_path = trainer(cfg, target)  # does the heavy lifting
-        shutil.copy2(ckpt_path, ckpt_expected)  # standardised name inside outputs/
-        _LOG.info("Checkpoint copied to %s", ckpt_expected)
-        print(f"[DEBUG MAIN] Training completed, checkpoint saved to {ckpt_expected}")
+        # No need to copy - trainer saves directly to the right location
+        print(f"[DEBUG MAIN] Training completed, checkpoint saved to {ckpt_path}")
 
     # Always (re-)create the sanity scatter so that plots/ is complete
     print(f"[DEBUG MAIN] Generating bidirectional verification plot")
@@ -145,8 +135,8 @@ def _train(cfg: Dict[str, Any], exp_dir: Path, target):
 # ─────────────────────────────────────────────────────────────────────────────
 # EVALUATE
 # ─────────────────────────────────────────────────────────────────────────────
-def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
-    """Run swap-rate + metrics and collate outputs inside *exp_dir*."""
+def _evaluate(cfg: Dict[str, Any]):
+    """Run swap-rate + metrics and produce outputs."""
     print(f"[DEBUG MAIN] Starting evaluation phase")
     
     # -- 1) swap-rate (produces JSON summary) -------------------------------
@@ -188,11 +178,10 @@ def main() -> None:
 
     print(f"[DEBUG MAIN] Loading config from {args.config}")
     cfg = load_config(args.config)
-    exp_dir = _experiment_dir(cfg)
-    print(f"[DEBUG MAIN] Experiment directory: {exp_dir}")
+    print(f"[DEBUG MAIN] Experiment directory: {cfg['output']['base_dir']}")
     
     # Create output directories and configure logging
-    for key in ("checkpoints", "plots_dir", "results_dir", "logs_dir"):
+    for key in ("checkpoints", "plots_dir", "results_dir"):
         Path(cfg["output"][key]).mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -217,13 +206,13 @@ def main() -> None:
 
     if args.run_all:
         target = build_target(cfg, device)
-        _train(cfg, exp_dir, target)
-        _evaluate(cfg, exp_dir)
+        _train(cfg, target)
+        _evaluate(cfg)
     elif args.train:
         target = build_target(cfg, device)
-        _train(cfg, exp_dir, target)
+        _train(cfg, target)
     elif args.evaluate:
-        _evaluate(cfg, exp_dir)
+        _evaluate(cfg)
     
     print(f"[DEBUG MAIN] Experiment completed successfully")
 

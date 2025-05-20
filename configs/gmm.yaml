@@ -1,12 +1,12 @@
-name: "gmm3d_8m_random"
+name: "gmm4d_5m_random"
 device: "cuda"
 
 target:
   type: gmm
 gmm:
-  dim: 3
-  n_mixes: 8
-  loc_scaling: 6.0
+  dim: 4
+  n_mixes: 5
+  loc_scaling: 5.0
   mode_arrangement: "random"
   grid_range: [-6.0, 6.0]
 
@@ -23,7 +23,7 @@ model_type: realnvp
 trainer:
   realnvp:
     model:
-      hidden_dim: 256
+      hidden_dim: 512
       n_couplings: 30
       use_permutation: true
     training:

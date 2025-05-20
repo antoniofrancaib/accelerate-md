@@ -131,7 +131,7 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
             best_state = copy.deepcopy(flow.state_dict())
 
     # 7) Save best checkpoint ----------------------------------------------
-    ckpt_path = ckpt_dir / f"tarflow_{t_low}_to_{t_high}.pt"
+    ckpt_path = Path(cfg["output"]["model_path"])
     torch.save(best_state, ckpt_path)
     logger.info("Saved best TarFlow model → %s", ckpt_path)
     return ckpt_path 
