@@ -14,7 +14,7 @@ python main.py --config configs/gmm.yaml --run-all
 """
 
 from __future__ import annotations
-import argparse, logging, shutil, json, copy
+import argparse, logging, shutil, json, copy, sys
 from pathlib import Path
 from typing import Dict, Any
 
@@ -43,10 +43,6 @@ TRAINER_REGISTRY = {
 #                          small internal helpers                             #
 # --------------------------------------------------------------------------- #
 _LOG = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s ­%(levelname)s ­%(name)s ­ %(message)s",
-)
 
 def _experiment_dir(cfg: Dict[str, Any]) -> Path:
     """Compute  …/outputs/<experiment-name>  (create if necessary)."""
@@ -117,7 +113,7 @@ def _train(cfg: Dict[str, Any], exp_dir: Path, target):
     print(f"[DEBUG MAIN] Starting training phase")
     t_low  = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
-    ckpt_expected = exp_dir / "model.pt"
+    ckpt_expected = Path(cfg["output"]["model_path"])
 
     if ckpt_expected.is_file():
         _LOG.info("Model checkpoint already present – skipping training.")
@@ -135,12 +131,12 @@ def _train(cfg: Dict[str, Any], exp_dir: Path, target):
     _generate_bidirectional_plot(
         cfg,
         ckpt_expected,
-        exp_dir / "plots" / "bidirectional_verification.png",
+        Path(cfg["output"]["plots_dir"]) / "bidirectional_verification.png",
     )
     print(f"[DEBUG MAIN] Bidirectional verification plot generated")
 
     # Store a verbatim copy of the YAML that was *actually* used
-    with open(exp_dir / "config.yaml", "w", encoding="utf-8") as fp:
+    with open(Path(cfg["output"]["config_copy"]), "w", encoding="utf-8") as fp:
         yaml.safe_dump(cfg, fp)
     _LOG.info("Config snapshot written.")
     print(f"[DEBUG MAIN] Training phase completed")
@@ -152,40 +148,21 @@ def _train(cfg: Dict[str, Any], exp_dir: Path, target):
 def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
     """Run swap-rate + metrics and collate outputs inside *exp_dir*."""
     print(f"[DEBUG MAIN] Starting evaluation phase")
-    # We point the evaluator sub-modules *into*   outputs/<name>/…
-    cfg_eval = copy.deepcopy(cfg)  # avoid polluting the original dict
     
-    # Ensure evaluator section exists and has the required fields
-    if "evaluator" not in cfg_eval:
-        cfg_eval["evaluator"] = {}
-    
-    # Set plot and results directories
-    cfg_eval["evaluator"]["plot_dir"] = str(exp_dir / "plots")
-    cfg_eval["evaluator"]["results_dir"] = str(exp_dir)
-    
-    # Make sure they exist
-    Path(cfg_eval["evaluator"]["plot_dir"]).mkdir(exist_ok=True, parents=True)
-    Path(cfg_eval["evaluator"]["results_dir"]).mkdir(exist_ok=True, parents=True)
-
     # -- 1) swap-rate (produces JSON summary) -------------------------------
     print(f"[DEBUG MAIN] Running swap-rate evaluation")
-    swap_rate.run(cfg_eval)
+    swap_rate.run(cfg)
     print(f"[DEBUG MAIN] Swap-rate evaluation completed")
 
     # -- 2) metrics (two extra PNGs) ----------------------------------------
     print(f"[DEBUG MAIN] Running metrics")
-    acceptance_autocorrelation.run(cfg_eval)
-    moving_average_acceptance.run(cfg_eval)
+    acceptance_autocorrelation.run(cfg)
+    moving_average_acceptance.run(cfg)
     print(f"[DEBUG MAIN] Metrics calculation completed")
 
-    # -- 3) copy / rename JSON → metrics.json -------------------------------
-    from src.accelmd.evaluators.swap_rate import _pair_suffix
-    tl, th = float(cfg_eval["pt"]["temp_low"]), float(cfg_eval["pt"]["temp_high"])
-    json_src = exp_dir / f"gmm_swap_rate_{_pair_suffix(tl, th)}.json"
-    json_dst = exp_dir / "metrics.json"
-    shutil.copy2(json_src, json_dst)
-    _LOG.info("Metrics aggregated → %s", json_dst)
-    print(f"[DEBUG MAIN] Metrics aggregated to {json_dst}")
+    # Metrics are now stored directly at the expected location via template
+    _LOG.info("Metrics calculated → %s", cfg["output"]["metric_json"])
+    print(f"[DEBUG MAIN] Metrics saved to {cfg['output']['metric_json']}")
     print(f"[DEBUG MAIN] Evaluation phase completed")
 
 
@@ -213,6 +190,20 @@ def main() -> None:
     cfg = load_config(args.config)
     exp_dir = _experiment_dir(cfg)
     print(f"[DEBUG MAIN] Experiment directory: {exp_dir}")
+    
+    # Create output directories and configure logging
+    for key in ("checkpoints", "plots_dir", "results_dir", "logs_dir"):
+        Path(cfg["output"][key]).mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        handlers=[
+            logging.FileHandler(cfg["output"]["log_file"], mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    _LOG.info("Loaded config:\n%s", yaml.dump(cfg, sort_keys=False))
     
     print(f"[DEBUG MAIN] Running with options: train={args.train}, evaluate={args.evaluate}, run-all={args.run_all}")
     

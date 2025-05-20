@@ -27,7 +27,7 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
     tr_cfg = cfg["trainer"]["tarflow"]["training"]
 
     # 1) Output directories --------------------------------------------------
-    ckpt_dir = Path(cfg["trainer"]["tarflow"]["checkpoint_dir"])
+    ckpt_dir = Path(cfg["output"]["checkpoints"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # 2) Prepare target ----------------------------------------

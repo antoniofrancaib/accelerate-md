@@ -43,10 +43,10 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_histories(results_dir: Path, t_low: float, t_high: float) -> tuple[List[int], List[int]]:
+def _load_histories(results_dir: Path, t_low: float, t_high: float, cfg: Dict[str, Any]) -> tuple[List[int], List[int]]:
     """Load histories for a specific temperature pair."""
-    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
-    json_path = results_dir / json_name
+    # Use the metric_json path directly from the config
+    json_path = Path(cfg["output"]["metric_json"])
     if not json_path.is_file():
         raise FileNotFoundError(
             f"Results JSON '{json_path}' not found. Run swap-rate evaluation first."
@@ -96,9 +96,9 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 1) Load data
     # ------------------------------------------------------------------
-    results_dir = Path(cfg["evaluator"]["results_dir"])
+    results_dir = Path(cfg["output"]["results_dir"])
     t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
-    naive_hist, flow_hist = _load_histories(results_dir, t_low, t_high)
+    naive_hist, flow_hist = _load_histories(results_dir, t_low, t_high, cfg)
 
     swap_interval = int(cfg["pt"].get("swap_interval", 100))
     # Calculate window size with a sensible maximum (not more than 25% of data length)
@@ -162,7 +162,7 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     plt.legend()
     plt.tight_layout()
 
-    plot_dir = Path(cfg["evaluator"]["plot_dir"])
+    plot_dir = Path(cfg["output"]["plots_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
     out_path = plot_dir / f"moving_average_acceptance_{_pair_suffix(t_low, t_high)}.png"
     plt.savefig(out_path, dpi=200)

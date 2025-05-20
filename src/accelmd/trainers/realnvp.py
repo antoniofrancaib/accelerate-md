@@ -88,18 +88,11 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     # ───────────────────────────────────────────────────
     # 0. Output dirs
     # ───────────────────────────────────────────────────
-    ckpt_dir = Path(cfg["trainer"]["realnvp"]["checkpoint_dir"])
+    ckpt_dir = Path(cfg["output"]["checkpoints"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get plot_dir from evaluator section if available, otherwise from output section
-    if "evaluator" in cfg and "plot_dir" in cfg["evaluator"]:
-        plot_dir = Path(cfg["evaluator"]["plot_dir"])
-    elif "output" in cfg and "plots_dir" in cfg["output"]:
-        plot_dir = Path(cfg["output"]["plots_dir"])
-    else:
-        # Fallback to a default location
-        plot_dir = Path("plots")
-    
+    # Use standardized paths from output config
+    plot_dir = Path(cfg["output"]["plots_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
     print(f"[DEBUG] Created output directories")
 
@@ -137,7 +130,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         n_samples=n_samples,
         noise_std=float(tr_cfg.get("noise_std", 0.0))
     )
-    val_split = tr_cfg["val_split"]
+    val_split = tr_cfg.get("val_split", 0.1)  
     val_len = int(len(dataset) * val_split)
     train_len = len(dataset) - val_len
     train_set, val_set = random_split(dataset, [train_len, val_len],

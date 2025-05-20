@@ -115,25 +115,24 @@ def _attempt_load_flow(cfg: dict, device: torch.device, target) -> torch.nn.Modu
     model_type = cfg.get("model_type", "realnvp")
     
     # First, try to find the model in the output directory (new centralized location)
-    if "output" in cfg and "model_path" in cfg["output"]:
-        model_path = Path(cfg["output"]["model_path"])
-        # Check if model exists at the specified path
-        if model_path.is_file():
-            logger.info(f"Found model at centralized path: {model_path}")
-            # Build model architecture from correct trainer subsection
-            model_cfg = copy.deepcopy(cfg.get("trainer", {}).get(model_type, {}).get("model", {}))
-            model_cfg["dim"] = target.dim if hasattr(target, 'dim') else target.sample((1,)).shape[-1]
-            flow = MODEL_REGISTRY[model_type](model_cfg).to(device)
-            state_dict = torch.load(model_path, map_location=device)
-            # Handle checkpoints that store a dict vs plain state_dict
-            if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
-                state_dict = state_dict["model_state_dict"]
-            flow.load_state_dict(state_dict)
-            flow.eval()
-            return flow
+    model_path = Path(cfg["output"]["model_path"])
+    # Check if model exists at the specified path
+    if model_path.is_file():
+        logger.info(f"Found model at centralized path: {model_path}")
+        # Build model architecture from correct trainer subsection
+        model_cfg = copy.deepcopy(cfg.get("trainer", {}).get(model_type, {}).get("model", {}))
+        model_cfg["dim"] = target.dim if hasattr(target, 'dim') else target.sample((1,)).shape[-1]
+        flow = MODEL_REGISTRY[model_type](model_cfg).to(device)
+        state_dict = torch.load(model_path, map_location=device)
+        # Handle checkpoints that store a dict vs plain state_dict
+        if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
+        flow.load_state_dict(state_dict)
+        flow.eval()
+        return flow
     
     # Fall back to the old checkpoint directory approach
-    ckpt_dir = Path(cfg["evaluator"]["checkpoint_dir"])
+    ckpt_dir = Path(cfg["output"]["checkpoints"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     pt_cfg = cfg["pt"]
@@ -346,8 +345,7 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     print(f"[DEBUG] Config: T_low={t_low}, T_high={t_high}, n_steps={n_steps}, n_attempts={n_attempts}")
 
     # Output directories
-    eval_cfg = cfg["evaluator"]
-    results_dir = Path(eval_cfg["results_dir"])
+    results_dir = Path(cfg["output"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -427,10 +425,8 @@ Swap Pair   |  Naive PT  |  Flow-based T-GePT
         "flow_hist": flow_hist,
     }
 
-    # Use pair-specific identifier to avoid overwriting files when looping
-    # over multiple temperature pairs.
-    json_name = f"gmm_swap_rate_{_pair_suffix(t_low, t_high)}.json"
-    json_path = results_dir / json_name
+    # Use the metric_json path from config to ensure consistent file location
+    json_path = cfg["output"]["metric_json"]
     with open(json_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
     logger.info("Wrote summary to %s", json_path)
