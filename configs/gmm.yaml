@@ -34,10 +34,10 @@ pt:
   total_n_temp: 2
   temp_schedule: "geom"
   num_chains: 1
-  num_steps: 100000            # Reduced for quick testing
-  burn_in:   5000
-  swap_interval: 1000
-  check_interval: 5000
+  num_steps: 10000            # Reduced for quick testing
+  burn_in:   500
+  swap_interval: 100
+  check_interval: 500
   step_size: 0.0001
 
 # -----------------------------------------------------------------------------
@@ -52,7 +52,7 @@ trainer:
     model:
       dim:           2       # Will be automatically synced with gmm.dim
       hidden_dim:    512     # Larger for higher dimensions
-      n_couplings:   50       # One per dimension is a good rule of thumb
+      n_couplings:   30       # One per dimension is a good rule of thumb
       use_permutation: true
 
     # optimization
