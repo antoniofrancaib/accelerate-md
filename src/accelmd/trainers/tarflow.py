@@ -24,11 +24,14 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
     Returns the path to the best checkpoint saved on disk.
     """
     device = torch.device(cfg.get("device", "cpu"))
+    logger.info("Starting TarFlow training for target type=%s", cfg.get('target', {}).get('type', 'unknown'))
+    logger.info("Using device: %s", device)
     tr_cfg = cfg["trainer"]["tarflow"]["training"]
 
     # 1) Output directories --------------------------------------------------
     ckpt_dir = Path(cfg["output"]["checkpoints"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Created output directories")
 
     # 2) Prepare target ----------------------------------------
     if target is None:
@@ -47,6 +50,7 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
 
     # Determine n_modes for logging/wandb
     n_modes = getattr(low_tgt, 'n_mixes', target_dim)
+    logger.info("Target dimensions: %d, modes: %d", target_dim, n_modes)
 
     # 3) Dataset -------------------------------------------------------------
     ds = TemperedPairDataset(

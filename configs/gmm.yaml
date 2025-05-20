@@ -1,10 +1,10 @@
-name: "gmm4d_5m_random"
+name: "gmm_2dim_5mod_2rep_random"
 device: "cuda"
 
 target:
   type: gmm
 gmm:
-  dim: 4
+  dim: 2
   n_mixes: 5
   loc_scaling: 5.0
   mode_arrangement: "random"

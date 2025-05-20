@@ -325,7 +325,7 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # 1) Load config & set up directories (cfg already loaded by caller)
     # ------------------------------------------------------------------
     # cfg is already provided
-    print(f"[DEBUG] Starting swap-rate evaluation")
+    logger.info("Starting swap-rate evaluation")
 
     # Initialize wandb if enabled
     _init_wandb(cfg)
@@ -335,14 +335,15 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     if device.type == "cuda" and not torch.cuda.is_available():
         logger.warning("CUDA requested but not available – falling back to CPU")
         device = torch.device("cpu")
-    print(f"[DEBUG] Using device: {device}")
+    logger.info("Using device: %s", device)
 
     pt_cfg = cfg["pt"]
     t_low, t_high = float(pt_cfg["temp_low"]), float(pt_cfg["temp_high"])
     n_steps = int(pt_cfg["num_steps"])
     swap_interval = int(pt_cfg["swap_interval"])
     n_attempts = max(1, n_steps // swap_interval)
-    print(f"[DEBUG] Config: T_low={t_low}, T_high={t_high}, n_steps={n_steps}, n_attempts={n_attempts}")
+    logger.info("Config: T_low=%f, T_high=%f, n_steps=%d, n_attempts=%d", 
+               t_low, t_high, n_steps, n_attempts)
 
     # Output directories
     results_dir = Path(cfg["output"]["results_dir"])
@@ -351,29 +352,29 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 2) Build targets & (optionally) flow model
     # ------------------------------------------------------------------
-    print(f"[DEBUG] Building target distribution …")
+    logger.info("Building target distribution...")
     low_tgt = build_target(cfg, device)
     hi_tgt  = low_tgt.tempered_version(t_high)
 
     # Flow model (may raise if checkpoint not found)
-    print(f"[DEBUG] Loading flow model")
+    logger.info("Loading flow model")
     try:
         flow = _attempt_load_flow(cfg, device, low_tgt)
-        print(f"[DEBUG] Flow model loaded successfully")
+        logger.info("Flow model loaded successfully")
     except Exception as e:
-        print(f"[DEBUG] Error loading flow model: {str(e)}")
+        logger.error("Error loading flow model: %s", str(e))
         raise
 
     # ------------------------------------------------------------------
     # 3) Run the experiment – generate acceptance histories
     # ------------------------------------------------------------------
-    print(f"[DEBUG] Running swap experiments for {n_attempts} attempts")
+    logger.info("Running swap experiments for %d attempts", n_attempts)
     naive_hist: List[int] = []
     flow_hist: List[int] = []
 
     for i in range(n_attempts):
         if i % 100 == 0:
-            print(f"[DEBUG] Swap attempt {i+1}/{n_attempts}")
+            logger.info("Swap attempt %d/%d", i+1, n_attempts)
             
         # Draw *fresh* samples from each tempered distribution to mimic well-mixed PT chains
         x_low = low_tgt.sample((1,)).to(device)
@@ -393,7 +394,8 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
 
     naive_rate = float(np.mean(naive_hist))
     flow_rate = float(np.mean(flow_hist))
-    print(f"[DEBUG] Completed swap experiments. Naive rate: {naive_rate:.4f}, Flow rate: {flow_rate:.4f}")
+    logger.info("Completed swap experiments. Naive rate: %f, Flow rate: %f", 
+                naive_rate, flow_rate)
 
     # Log to wandb
     if WANDB_AVAILABLE and cfg.get("wandb", False):
@@ -407,13 +409,12 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 4) Pretty print table
     # ------------------------------------------------------------------
-    print(
+    logger.info(
         """
 Swap Pair   |  Naive PT  |  Flow-based T-GePT
 +------------|------------|-----------------
-+(T₁↔Tₖ)      |   {na:.2f}     |      {fa:.2f}
-""".format(na=naive_rate, fa=flow_rate)
-    )
++(T₁↔Tₖ)      |   %.2f     |      %.2f
+""", naive_rate, flow_rate)
 
     # ------------------------------------------------------------------
     # 5) JSON summary – pair-specific filename
@@ -430,7 +431,7 @@ Swap Pair   |  Naive PT  |  Flow-based T-GePT
     with open(json_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
     logger.info("Wrote summary to %s", json_path)
-    print(f"[DEBUG] Wrote results to {json_path}")
+    logger.info("Wrote results to %s", json_path)
 
     # Log a table to wandb
     if WANDB_AVAILABLE and cfg.get("wandb", False):

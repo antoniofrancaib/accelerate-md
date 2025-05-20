@@ -101,35 +101,35 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
 
 def _train(cfg: Dict[str, Any], target):
     """Run training (if not already cached)."""
-    print(f"[DEBUG MAIN] Starting training phase")
+    _LOG.info("Starting training phase")
     
     # The checkpoint path is now consistent with what trainers produce
     ckpt_expected = Path(cfg["output"]["model_path"])
 
     if ckpt_expected.is_file():
         _LOG.info("Model checkpoint already present – skipping training.")
-        print(f"[DEBUG MAIN] Using existing model checkpoint: {ckpt_expected}")
+        _LOG.info("Using existing model checkpoint: %s", ckpt_expected)
     else:
-        print(f"[DEBUG MAIN] No checkpoint found at {ckpt_expected}, running training...")
+        _LOG.info("No checkpoint found at %s, running training...", ckpt_expected)
         trainer = TRAINER_REGISTRY[cfg.get("model_type", "realnvp")]
         ckpt_path = trainer(cfg, target)  # does the heavy lifting
         # No need to copy - trainer saves directly to the right location
-        print(f"[DEBUG MAIN] Training completed, checkpoint saved to {ckpt_path}")
+        _LOG.info("Training completed, checkpoint saved to %s", ckpt_path)
 
     # Always (re-)create the sanity scatter so that plots/ is complete
-    print(f"[DEBUG MAIN] Generating bidirectional verification plot")
+    _LOG.info("Generating bidirectional verification plot")
     _generate_bidirectional_plot(
         cfg,
         ckpt_expected,
         Path(cfg["output"]["plots_dir"]) / "bidirectional_verification.png",
     )
-    print(f"[DEBUG MAIN] Bidirectional verification plot generated")
+    _LOG.info("Bidirectional verification plot generated")
 
     # Store a verbatim copy of the YAML that was *actually* used
     with open(Path(cfg["output"]["config_copy"]), "w", encoding="utf-8") as fp:
         yaml.safe_dump(cfg, fp)
     _LOG.info("Config snapshot written.")
-    print(f"[DEBUG MAIN] Training phase completed")
+    _LOG.info("Training phase completed")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,28 +137,52 @@ def _train(cfg: Dict[str, Any], target):
 # ─────────────────────────────────────────────────────────────────────────────
 def _evaluate(cfg: Dict[str, Any]):
     """Run swap-rate + metrics and produce outputs."""
-    print(f"[DEBUG MAIN] Starting evaluation phase")
+    _LOG.info("Starting evaluation phase")
     
     # -- 1) swap-rate (produces JSON summary) -------------------------------
-    print(f"[DEBUG MAIN] Running swap-rate evaluation")
+    _LOG.info("Running swap-rate evaluation")
     swap_rate.run(cfg)
-    print(f"[DEBUG MAIN] Swap-rate evaluation completed")
+    _LOG.info("Swap-rate evaluation completed")
 
     # -- 2) metrics (two extra PNGs) ----------------------------------------
-    print(f"[DEBUG MAIN] Running metrics")
+    _LOG.info("Running metrics")
     acceptance_autocorrelation.run(cfg)
     moving_average_acceptance.run(cfg)
-    print(f"[DEBUG MAIN] Metrics calculation completed")
+    _LOG.info("Metrics calculation completed")
 
     # Metrics are now stored directly at the expected location via template
     _LOG.info("Metrics calculated → %s", cfg["output"]["metric_json"])
-    print(f"[DEBUG MAIN] Metrics saved to {cfg['output']['metric_json']}")
-    print(f"[DEBUG MAIN] Evaluation phase completed")
+    _LOG.info("Evaluation phase completed")
 
 
 # --------------------------------------------------------------------------- #
 #                                     CLI                                     #
 # --------------------------------------------------------------------------- #
+def configure_logging(log_file):
+    """Configure root logger to write to both file and console."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Clear any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        
+    # Create handlers
+    file_handler = logging.FileHandler(log_file, mode="w")
+    console_handler = logging.StreamHandler(sys.stdout)
+    
+    # Create formatter and add to handlers
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    return root_logger
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Altan RealNVP ⇆ GMM driver")
     p.add_argument("--config", type=str, required=True,
@@ -176,25 +200,25 @@ def main() -> None:
     if not (args.train or args.evaluate or args.run_all):
         p.error("Please specify --train, --evaluate or --run-all.")
 
-    print(f"[DEBUG MAIN] Loading config from {args.config}")
+    # First, load the config to get the log file path
+    _LOG.info("Loading config from %s", args.config)
     cfg = load_config(args.config)
-    print(f"[DEBUG MAIN] Experiment directory: {cfg['output']['base_dir']}")
+    _LOG.info("Experiment directory: %s", cfg["output"]["base_dir"])
     
-    # Create output directories and configure logging
+    # Create output directories
     for key in ("checkpoints", "plots_dir", "results_dir"):
         Path(cfg["output"][key]).mkdir(parents=True, exist_ok=True)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s: %(message)s",
-        handlers=[
-            logging.FileHandler(cfg["output"]["log_file"], mode="w"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    # Configure logging to write to both file and console
+    # This will update the root logger, affecting all modules
+    log_file = cfg["output"]["log_file"]
+    configure_logging(log_file)
+    
+    # Log detailed config information
     _LOG.info("Loaded config:\n%s", yaml.dump(cfg, sort_keys=False))
     
-    print(f"[DEBUG MAIN] Running with options: train={args.train}, evaluate={args.evaluate}, run-all={args.run_all}")
+    _LOG.info("Running with options: train=%s, evaluate=%s, run-all=%s", 
+              args.train, args.evaluate, args.run_all)
     
     # Use CPU if explicitly requested
     if args.cpu:
@@ -214,8 +238,13 @@ def main() -> None:
     elif args.evaluate:
         _evaluate(cfg)
     
-    print(f"[DEBUG MAIN] Experiment completed successfully")
+    _LOG.info("Experiment completed successfully")
 
 
 if __name__ == "__main__":
+    # Set up basic logging before config is loaded
+    logging.basicConfig(level=logging.INFO, 
+                        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+                        handlers=[logging.StreamHandler()])
+    
     main()

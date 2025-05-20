@@ -5,6 +5,10 @@ This is the repository for the MLMI MPhil project: Accelerating Molecular Dynami
 ✍️ New to molecular simulations? Here’s a curated reading + watch list for beginners: [RESOURCES](notebooks/RESOURCES.md)
 
 
+The pipeline is super user-friendly structured. Create a proper conda. Submit the job to the cluster. Everything is centralized in configs. 
+
+The expected output structure is the following. 
+
 ### Clone the Repository
 ```bash
 git clone https://github.com/your-username/accelerate-md.git

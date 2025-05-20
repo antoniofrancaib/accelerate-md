@@ -81,9 +81,9 @@ def _scheduler(optimiser: optim.Optimizer,
 
 def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     """Main training routine – returns path to best checkpoint."""
-    print(f"[DEBUG] Starting RealNVP training for target type={cfg['target']['type']}")
+    logger.info("Starting RealNVP training for target type=%s", cfg['target']['type'])
     device = torch.device(cfg.get("device", "cpu"))
-    print(f"[DEBUG] Using device: {device}")
+    logger.info("Using device: %s", device)
 
     # ───────────────────────────────────────────────────
     # 0. Output dirs
@@ -94,7 +94,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     # Use standardized paths from output config
     plot_dir = Path(cfg["output"]["plots_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[DEBUG] Created output directories")
+    logger.info("Created output directories")
 
     # ───────────────────────────────────────────────────
     # 1. Prepare target distributions
@@ -120,17 +120,17 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     # ───────────────────────────────────────────────────
     # 2. Dataset
     # ───────────────────────────────────────────────────
-    print(f"[DEBUG] Creating dataset...")
+    logger.info("Creating dataset...")
     tr_cfg = cfg["trainer"]["realnvp"]["training"]
     n_samples = tr_cfg.get("n_samples", 50_000)
-    print(f"[DEBUG] Generating {n_samples} data samples")
+    logger.info("Generating %d data samples", n_samples)
     dataset = TemperedPairDataset(
         low_target=low_tgt,
         high_target=hi_tgt,
         n_samples=n_samples,
         noise_std=float(tr_cfg.get("noise_std", 0.0))
     )
-    val_split = tr_cfg.get("val_split", 0.1)  
+    val_split = tr_cfg.get("val_split", 0.1)  # Default to 10% validation split if not specified
     val_len = int(len(dataset) * val_split)
     train_len = len(dataset) - val_len
     train_set, val_set = random_split(dataset, [train_len, val_len],
@@ -142,16 +142,17 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     vloader = DataLoader(val_set,
                          batch_size=tr_cfg["batch_size"],
                          shuffle=False)
-    print(f"[DEBUG] Dataset created with {len(train_set)} training and {len(val_set)} validation samples")
+    logger.info("Dataset created with %d training and %d validation samples", len(train_set), len(val_set))
 
     # ───────────────────────────────────────────────────
     # 3. Model & optimiser - ensure dimension compatibility
     # ───────────────────────────────────────────────────
-    print(f"[DEBUG] Creating RealNVP model...")
+    logger.info("Creating RealNVP model...")
     model_cfg = copy.deepcopy(cfg["trainer"]["realnvp"]["model"])
     model_cfg["dim"] = target_dim  # Ensure the flow model uses the same dimension as GMM
     flow = create_realnvp_flow(model_cfg).to(device)
-    print(f"[DEBUG] Created RealNVP flow with {model_cfg['n_couplings']} couplings, dim={model_cfg['dim']}, hidden_dim={model_cfg['hidden_dim']}")
+    logger.info("Created RealNVP flow with %d couplings, dim=%d, hidden_dim=%d", 
+                model_cfg['n_couplings'], model_cfg['dim'], model_cfg['hidden_dim'])
     
     # Initialize weights with smaller values to improve numerical stability
     def init_weights(m):
@@ -192,14 +193,14 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
                          base_lr=initial_lr,
                          target_lr=learning_rate,
                          eta_min_factor=eta_min_factor)
-    print(f"[DEBUG] Optimizer and scheduler created")
+    logger.info("Optimizer and scheduler created")
 
     _init_wandb(cfg, n_modes)
 
     # ───────────────────────────────────────────────────
     # 4. Training loop
     # ───────────────────────────────────────────────────
-    print(f"[DEBUG] Starting training loop: {max_epochs} epochs")
+    logger.info("Starting training loop: %d epochs", max_epochs)
     best_loss = float("inf")
     best_state = None
     step_idx = 0
@@ -207,14 +208,14 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     for epoch in range(tr_cfg["n_epochs"]):
         flow.train()
         running = 0.0
-        print(f"[DEBUG] Starting epoch {epoch+1}/{max_epochs}")
+        logger.info("Starting epoch %d/%d", epoch+1, max_epochs)
         
         batch_count = 0
         for xb_hi, xb_lo in loader:
             xb_hi, xb_lo = xb_hi.to(device), xb_lo.to(device)
             batch_count += 1
             if batch_count % 10 == 0:
-                print(f"[DEBUG] Processing batch {batch_count}/{len(loader)}")
+                logger.info("Processing batch %d/%d", batch_count, len(loader))
 
             # High→Low
             y_lo, ld_inv = flow.inverse(xb_hi)
@@ -230,18 +231,18 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
             # Check for NaN values and report which component is causing them
             if torch.isnan(loss_hl):
                 low_log_prob = low_tgt.log_prob(y_lo).mean()
-                logger.warning(f"NaN in loss_hl: low_log_prob={low_log_prob.item():.4f}, ld_inv={ld_inv.mean().item():.4f}")
+                logger.warning("NaN in loss_hl: low_log_prob=%f, ld_inv=%f", low_log_prob.item(), ld_inv.mean().item())
                 # Clip extremely negative values to prevent NaN
                 loss_hl = -torch.clamp(low_tgt.log_prob(y_lo) + ld_inv, min=-1e6, max=1e6).mean()
 
             if torch.isnan(loss_lh):
                 hi_log_prob = hi_tgt.log_prob(y_hi).mean()
-                logger.warning(f"NaN in loss_lh: hi_log_prob={hi_log_prob.item():.4f}, ld_fwd={ld_fwd.mean().item():.4f}")
+                logger.warning("NaN in loss_lh: hi_log_prob=%f, ld_fwd=%f", hi_log_prob.item(), ld_fwd.mean().item())
                 # Clip extremely negative values to prevent NaN
                 loss_lh = -torch.clamp(hi_tgt.log_prob(y_hi) + ld_fwd, min=-1e6, max=1e6).mean()
 
             if torch.isnan(mse):
-                logger.warning(f"NaN in MSE stabilizer")
+                logger.warning("NaN in MSE stabilizer")
                 mse = torch.tensor(0.0, device=device)
 
             loss = loss_hl + loss_lh + mse
@@ -267,7 +268,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         train_loss = running / len(train_set)
 
         # ── validation
-        print(f"[DEBUG] Running validation for epoch {epoch+1}")
+        logger.info("Running validation for epoch %d", epoch+1)
         flow.eval()
         with torch.no_grad():
             running = 0.0
@@ -295,16 +296,15 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
                 running += batch_loss.item() * xb_hi.size(0)
         val_loss = running / len(val_set)
 
-        logger.info(f"[{epoch+1}/{tr_cfg['n_epochs']}] "
-                    f"train={train_loss:.4f}  val={val_loss:.4f}")
-        print(f"[DEBUG] Epoch {epoch+1}: train={train_loss:.4f}, val={val_loss:.4f}")
+        logger.info("[%d/%d] train=%f  val=%f", epoch+1, tr_cfg['n_epochs'], train_loss, val_loss)
+        logger.info("Epoch %d: train=%f, val=%f", epoch+1, train_loss, val_loss)
 
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = flow.state_dict()
             checkpoint_path = Path(cfg["output"]["model_path"])
             torch.save(best_state, checkpoint_path)
-            print(f"[DEBUG] New best model saved to {checkpoint_path}")
+            logger.info("New best model saved to %s", checkpoint_path)
 
         # early stop
         if best_loss == val_loss:
@@ -313,13 +313,12 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
             patience_counter += 1
         if patience_counter >= int(tr_cfg["patience"]):
             logger.info("Early stopping.")
-            print("[DEBUG] Early stopping triggered")
+            logger.info("Early stopping triggered")
             break
 
     # Save the best model, or the last one if no good model was found
-    logger.info(f"Best val loss: {best_loss:.4f}")
-    checkpoint_path = Path(cfg["output"]["model_path"])
-    print(f"[DEBUG] Training completed, best val loss: {best_loss:.4f}")
+    logger.info("Best val loss: %f", best_loss)
+    logger.info("Training completed, best val loss: %f", best_loss)
 
     if best_state is not None:
         torch.save(best_state, checkpoint_path)
@@ -329,7 +328,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         logger.warning("No valid checkpoint found - saving final model state")
         torch.save(flow.state_dict(), checkpoint_path)
     
-    print(f"[DEBUG] Final model saved to {checkpoint_path}")
+    logger.info("Final model saved to %s", checkpoint_path)
     return checkpoint_path
 
 
@@ -350,5 +349,5 @@ if __name__ == "__main__":
         cfg["wandb"] = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = train_realnvp(cfg)
-    print(f"✅ trained flow saved to {ckpt_path}")
+    logger.info("✅ trained flow saved to %s", ckpt_path)
     
