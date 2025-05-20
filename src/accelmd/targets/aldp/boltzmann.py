@@ -202,30 +202,55 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
     def performance_metrics(self, samples, log_w, log_q_fn, batch_size):
         return {}
 
+    def tempered_version(self, temperature=1.0, scaling_method='sqrt'):
+        """Return a simple proxy (no variance scaling) for higher temperatures.
+        This is a placeholder to ensure compatibility with code expecting
+        `.tempered_version`. For rigorous physics, implement proper scaling.
+        """
+        return self
 
 
-def get_aldp_target(config_path, device):
 
-    with open(config_path, 'r') as stream:
-        config = yaml.load(stream, yaml.FullLoader)
+def get_aldp_target(config: dict, device):
+    """Build ALDP target from a config dict under cfg['target'] block."""
+    # Expect keys similar to those in original YAML structure
+    system_cfg = {
+        "temperature": config.get("temperature", 300),
+        "energy_cut": config.get("energy_cut", 1.e8),
+        "energy_max": config.get("energy_max", 1.e20),
+        "n_threads": config.get("n_threads", 4),
+        "transform": config.get("transform", "internal"),
+        "shift_dih": config.get("shift_dih", False),
+        "env": config.get("env", "implicit"),
+    }
+    data_path = config.get("data_path")
 
-    # Target distribution
-    transform_mode = 'mixed' if not 'transform' in config['system'] \
-        else config['system']['transform']
-    shift_dih = False if not 'shift_dih' in config['system'] \
-        else config['system']['shift_dih']
-    env = 'vacuum' if not 'env' in config['system'] \
-        else config['system']['env']
     ind_circ_dih = [0, 1, 2, 3, 4, 5, 8, 9, 10, 13, 15, 16]
-    target = AldpBoltzmann(data_path=config['data']['transform'],
-                           temperature=config['system']['temperature'],
-                           energy_cut=config['system']['energy_cut'],
-                           energy_max=config['system']['energy_max'],
-                           n_threads=config['system']['n_threads'],
-                           transform=transform_mode,
-                           ind_circ_dih=ind_circ_dih,
-                           shift_dih=shift_dih,
-                           env=env)
-    target = target.to(device)
 
-    return target
+    target = AldpBoltzmann(
+        data_path=data_path,
+        temperature=system_cfg["temperature"],
+        energy_cut=system_cfg["energy_cut"],
+        energy_max=system_cfg["energy_max"],
+        n_threads=system_cfg["n_threads"],
+        transform=system_cfg["transform"],
+        ind_circ_dih=ind_circ_dih,
+        shift_dih=system_cfg["shift_dih"],
+        env=system_cfg["env"],
+    )
+    return target.to(device)
+
+# Keep backward compatibility with old signature (config_path: str)
+# ---------------------------------------------------------------
+
+_original_get_aldp_target = get_aldp_target  # overwrite below if path str
+
+def get_aldp_target(config_or_path, device):  # type: ignore
+    """Dispatch based on type: accepts dict (new) or YAML path (legacy)."""
+    if isinstance(config_or_path, dict):
+        return _original_get_aldp_target(config_or_path, device)
+    # Legacy: treat as path
+    import yaml
+    with open(config_or_path, 'r') as stream:
+        legacy_cfg = yaml.load(stream, yaml.FullLoader)
+    return _original_get_aldp_target(legacy_cfg, device)

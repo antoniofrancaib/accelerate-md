@@ -12,9 +12,10 @@ import numpy as np
 import torch
 
 from src.accelmd.utils.config import load_config
-from src.accelmd.targets.gmm import GMM
-from src.accelmd.models.realnvp import create_realnvp_flow
+from src.accelmd.targets import build_target
+from src.accelmd.models import MODEL_REGISTRY
 from src.accelmd.utils.gmm_modes import generate_gmm_modes
+from src.accelmd.targets.gmm import GMM  # legacy support
 
 # Try to import wandb, but make it optional
 try:
@@ -105,12 +106,33 @@ def _build_gmm_from_config(gmm_cfg: dict, device: torch.device) -> GMM:
     return gmm
 
 
-def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Module:
+def _attempt_load_flow(cfg: dict, device: torch.device, target) -> torch.nn.Module:
     """Create a RealNVP model from *cfg* and load weights from checkpoint.
 
     To remain backward compatible with different naming conventions, we try a
     couple of file-name patterns when looking for the checkpoint file.
     """
+    model_type = cfg.get("model_type", "realnvp")
+    
+    # First, try to find the model in the output directory (new centralized location)
+    if "output" in cfg and "model_path" in cfg["output"]:
+        model_path = Path(cfg["output"]["model_path"])
+        # Check if model exists at the specified path
+        if model_path.is_file():
+            logger.info(f"Found model at centralized path: {model_path}")
+            # Build model architecture from correct trainer subsection
+            model_cfg = copy.deepcopy(cfg.get("trainer", {}).get(model_type, {}).get("model", {}))
+            model_cfg["dim"] = target.dim if hasattr(target, 'dim') else target.sample((1,)).shape[-1]
+            flow = MODEL_REGISTRY[model_type](model_cfg).to(device)
+            state_dict = torch.load(model_path, map_location=device)
+            # Handle checkpoints that store a dict vs plain state_dict
+            if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
+            flow.load_state_dict(state_dict)
+            flow.eval()
+            return flow
+    
+    # Fall back to the old checkpoint directory approach
     ckpt_dir = Path(cfg["evaluator"]["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,22 +143,25 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
     t_low_rounded = round(t_low, 2)
     t_high_rounded = round(t_high, 2)
 
+    prefix = "flow" if model_type == "realnvp" else "tarflow"
+
     # List possible candidates from most specific to least specific
     candidates: List[Path] = []
-    
-    # Candidate 1: Exact 2 decimal format (new format)
-    candidates.append(ckpt_dir / f"flow_{t_low_rounded:.2f}_to_{t_high_rounded:.2f}.pt")
-    
-    # Candidate 2: Try just the rounded values without format specifier
-    candidates.append(ckpt_dir / f"flow_{t_low_rounded}_to_{t_high_rounded}.pt")
-    
-    # Candidate 3: Historical format with full precision
-    candidates.append(ckpt_dir / f"flow_{t_low}_to_{t_high}.pt")
-    
-    # Candidate 4: Generic fallback
-    n_modes = gmm.locs.shape[0]
-    candidates.append(ckpt_dir / f"realnvp_{n_modes}modes_best.pt")
-    
+
+    # Candidate 1: Exact two-decimal format
+    candidates.append(ckpt_dir / f"{prefix}_{t_low_rounded:.2f}_to_{t_high_rounded:.2f}.pt")
+
+    # Candidate 2: Rounded without formatting specifier
+    candidates.append(ckpt_dir / f"{prefix}_{t_low_rounded}_to_{t_high_rounded}.pt")
+
+    # Candidate 3: Full precision temperatures
+    candidates.append(ckpt_dir / f"{prefix}_{t_low}_to_{t_high}.pt")
+
+    # Candidate 4: Legacy RealNVP naming (only for realnvp)
+    if model_type == "realnvp":
+        n_modes = getattr(target, 'n_mixes', getattr(target, 'locs', torch.zeros(1)).shape[0] if hasattr(target, 'locs') else 0)
+        candidates.append(ckpt_dir / f"realnvp_{n_modes}modes_best.pt")
+
     # Try direct matches first
     ckpt_path: Path | None = None
     for cand in candidates:
@@ -153,9 +178,9 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
         t_high_trunc = int(t_high_rounded * 10) / 10
         
         patterns = [
-            f"flow_{t_low_trunc}*_to_{t_high_trunc}*.pt",  # e.g. flow_1.0*_to_1.6*.pt
-            f"flow_{t_low_rounded}_to_{t_high_rounded}.pt", # Exact rounded match
-            "flow_*_to_*.pt"  # Any flow file as a last resort
+            f"{prefix}_{t_low_trunc}*_to_{t_high_trunc}*.pt",  # e.g. flow_1.0*_to_1.6*.pt
+            f"{prefix}_{t_low_rounded}_to_{t_high_rounded}.pt", # Exact rounded match
+            f"{prefix}_*_to_*.pt"  # Any flow file as a last resort
         ]
         
         logger.info(f"No exact match found. Trying pattern search for t_low={t_low_rounded}, t_high={t_high_rounded}")
@@ -170,18 +195,23 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
                 break
 
     if ckpt_path is None:
-        raise FileNotFoundError(
-            f"Could not find a RealNVP checkpoint in {ckpt_dir}. Tried patterns including: "
-            f"flow_{t_low_rounded:.2f}_to_{t_high_rounded:.2f}.pt and broader patterns."
-        )
+        # If we got here, also try the experiment directory as a last resort
+        exp_dir = Path(cfg.get("output", {}).get("base_dir", "outputs")) / cfg.get("name", "")
+        model_file = exp_dir / "model.pt"
+        if model_file.is_file():
+            ckpt_path = model_file
+            logger.info(f"Found model in experiment directory: {ckpt_path}")
+        else:
+            raise FileNotFoundError(
+                f"Could not find a {model_type} checkpoint. Tried {ckpt_dir} and {exp_dir}. Check your config paths."
+            )
     
-    logger.info(f"Loading RealNVP weights from {ckpt_path}")
+    logger.info("Loading %s weights from %s", model_type, ckpt_path)
 
-    # Model architecture comes from trainer-section of config
-    # Ensure the flow uses the same dimension as the GMM
-    model_cfg = copy.deepcopy(cfg.get("trainer", {}).get("realnvp", {}).get("model", {}))
-    model_cfg["dim"] = gmm.dim
-    flow = create_realnvp_flow(model_cfg).to(device)
+    # Build model architecture from correct trainer subsection
+    model_cfg = copy.deepcopy(cfg.get("trainer", {}).get(model_type, {}).get("model", {}))
+    model_cfg["dim"] = target.dim if hasattr(target, 'dim') else target.sample((1,)).shape[-1]
+    flow = MODEL_REGISTRY[model_type](model_cfg).to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
     # Handle checkpoints that store a dict vs plain state_dict
     if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
@@ -194,8 +224,8 @@ def _attempt_load_flow(cfg: dict, device: torch.device, gmm: GMM) -> torch.nn.Mo
 def _compute_acceptance_naive(
     x_low: torch.Tensor,
     x_high: torch.Tensor,
-    gmm: GMM,
-    hi_gmm: torch.distributions.Distribution,
+    low_tgt,
+    hi_tgt,
     t_low: float,
     t_high: float,
 ) -> bool:
@@ -204,11 +234,11 @@ def _compute_acceptance_naive(
     x_low_flat = x_low.view(-1, x_low.shape[-1])
     x_high_flat = x_high.view(-1, x_high.shape[-1])
     
-    lp_low_x_low = gmm.log_prob(x_low_flat)
-    lp_low_x_high = gmm.log_prob(x_high_flat)
+    lp_low_x_low = low_tgt.log_prob(x_low_flat)
+    lp_low_x_high = low_tgt.log_prob(x_high_flat)
 
-    lp_hi_x_high = hi_gmm.log_prob(x_high_flat) / t_high
-    lp_hi_x_low = hi_gmm.log_prob(x_low_flat) / t_high
+    lp_hi_x_high = hi_tgt.log_prob(x_high_flat) / t_high
+    lp_hi_x_low = hi_tgt.log_prob(x_low_flat) / t_high
 
     log_alpha = (lp_low_x_high + lp_hi_x_low) - (lp_low_x_low + lp_hi_x_high)
     accept = torch.rand(()) .log() < log_alpha
@@ -218,8 +248,8 @@ def _compute_acceptance_naive(
 def _compute_acceptance_flow(
     x_low: torch.Tensor,
     x_high: torch.Tensor,
-    gmm: GMM,
-    hi_gmm: torch.distributions.Distribution,
+    low_tgt,
+    hi_tgt,
     flow: torch.nn.Module,
     t_high: float,
 ) -> bool:
@@ -233,11 +263,11 @@ def _compute_acceptance_flow(
     y_low, ld_inv = flow.inverse(x_high_flat)
 
     # Target log densities
-    lp_low_y_low = gmm.log_prob(y_low)
-    lp_hi_y_high = hi_gmm.log_prob(y_high) / t_high
+    lp_low_y_low = low_tgt.log_prob(y_low)
+    lp_hi_y_high = hi_tgt.log_prob(y_high) / t_high
 
-    lp_low_x_low = gmm.log_prob(x_low_flat)
-    lp_hi_x_high = hi_gmm.log_prob(x_high_flat) / t_high
+    lp_low_x_low = low_tgt.log_prob(x_low_flat)
+    lp_hi_x_high = hi_tgt.log_prob(x_high_flat) / t_high
 
     log_alpha = (
         lp_low_y_low + lp_hi_y_high
@@ -323,15 +353,14 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     # 2) Build targets & (optionally) flow model
     # ------------------------------------------------------------------
-    print(f"[DEBUG] Building GMM for dimension {cfg['gmm']['dim']}")
-    gmm = _build_gmm_from_config(cfg["gmm"], device)
-    hi_gmm = gmm.tempered_version(t_high)
-    print(f"[DEBUG] GMM built with {gmm.n_mixes} modes")
+    print(f"[DEBUG] Building target distribution …")
+    low_tgt = build_target(cfg, device)
+    hi_tgt  = low_tgt.tempered_version(t_high)
 
     # Flow model (may raise if checkpoint not found)
     print(f"[DEBUG] Loading flow model")
     try:
-        flow = _attempt_load_flow(cfg, device, gmm)
+        flow = _attempt_load_flow(cfg, device, low_tgt)
         print(f"[DEBUG] Flow model loaded successfully")
     except Exception as e:
         print(f"[DEBUG] Error loading flow model: {str(e)}")
@@ -349,18 +378,18 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
             print(f"[DEBUG] Swap attempt {i+1}/{n_attempts}")
             
         # Draw *fresh* samples from each tempered distribution to mimic well-mixed PT chains
-        x_low = gmm.sample((1,)).to(device)
-        x_high = hi_gmm.sample((1,)).to(device)
+        x_low = low_tgt.sample((1,)).to(device)
+        x_high = hi_tgt.sample((1,)).to(device)
 
         # --- Naive PT ---
         naive_accept = _compute_acceptance_naive(
-            x_low, x_high, gmm, hi_gmm, t_low, t_high
+            x_low, x_high, low_tgt, hi_tgt, t_low, t_high
         )
         naive_hist.append(int(naive_accept))
 
         # --- Flow-based PT ---
         flow_accept = _compute_acceptance_flow(
-            x_low, x_high, gmm, hi_gmm, flow, t_high
+            x_low, x_high, low_tgt, hi_tgt, flow, t_high
         )
         flow_hist.append(int(flow_accept))
 

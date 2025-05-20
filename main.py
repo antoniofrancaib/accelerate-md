@@ -23,14 +23,21 @@ import yaml
 
 # ---- project imports --------------------------------------------------------
 from src.accelmd.utils.config import load_config
-from src.accelmd.trainers.realnvp import train_realnvp
-from src.accelmd.targets.gmm import GMM
-from src.accelmd.models.realnvp import create_realnvp_flow
+from src.accelmd.models import MODEL_REGISTRY
+from src.accelmd.trainers.realnvp import train_realnvp  # keep for registry
+from src.accelmd.trainers.tarflow import train_tarflow  # new backend
 from src.accelmd.evaluators import swap_rate
 from src.accelmd.metrics import (
     acceptance_autocorrelation,
     moving_average_acceptance,
 )
+from src.accelmd.targets import build_target
+
+# Unified trainer registry for dynamic backend selection
+TRAINER_REGISTRY = {
+    "realnvp": train_realnvp,
+    "tarflow": train_tarflow,
+}
 
 # --------------------------------------------------------------------------- #
 #                          small internal helpers                             #
@@ -62,27 +69,27 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     import matplotlib.pyplot as plt  # local import keeps CLI snappy
 
     device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
-    gmm_cfg      = cfg["gmm"]
-    t_low        = float(cfg["pt"]["temp_low"])
-    t_high       = float(cfg["pt"]["temp_high"])
-
-    # --- rebuild same GMM ----------------------------------------------------
-    from src.accelmd.evaluators.swap_rate import _build_gmm_from_config
-    gmm    = _build_gmm_from_config(gmm_cfg, device)
-    hi_gmm = gmm.tempered_version(t_high, scaling_method="sqrt")
+    t_low  = float(cfg["pt"]["temp_low"])
+    t_high = float(cfg["pt"]["temp_high"])
+    low_tgt  = build_target(cfg, device)
+    high_tgt = low_tgt.tempered_version(t_high)
 
     # --- load flow -----------------------------------------------------------
-    model_cfg = copy.deepcopy(cfg["trainer"]["realnvp"]["model"])
-    model_cfg["dim"] = gmm_cfg["dim"]  # Ensure dimension compatibility
-    flow = create_realnvp_flow(model_cfg).to(device)
+    model_type = cfg.get("model_type", "realnvp")
+    model_cfg = copy.deepcopy(cfg["trainer"][model_type]["model"])
+    if hasattr(low_tgt, 'dim'):
+        model_cfg["dim"] = low_tgt.dim
+    else:
+        model_cfg["dim"] = low_tgt.sample((1,)).shape[-1]
+    flow = MODEL_REGISTRY[model_type](model_cfg).to(device)
     flow.load_state_dict(torch.load(ckpt_path, map_location=device))
     flow.eval()
 
     # --- sample + map --------------------------------------------------------
     N = 5_000
     with torch.no_grad():
-        x_hi     = hi_gmm.sample((N,)).to(device)
-        x_lo     = gmm.sample((N,)).to(device)
+        x_hi     = high_tgt.sample((N,)).to(device)
+        x_lo     = low_tgt.sample((N,)).to(device)
         x_hi2lo, _ = flow.inverse(x_hi)
         x_lo2hi, _ = flow.forward(x_lo)
 
@@ -105,7 +112,7 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     _LOG.info("Bidirectional verification figure saved → %s", out_png)
 
 
-def _train(cfg: Dict[str, Any], exp_dir: Path):
+def _train(cfg: Dict[str, Any], exp_dir: Path, target):
     """Run training (if not already cached) and copy artefacts into *exp_dir*."""
     print(f"[DEBUG MAIN] Starting training phase")
     t_low  = float(cfg["pt"]["temp_low"])
@@ -117,7 +124,8 @@ def _train(cfg: Dict[str, Any], exp_dir: Path):
         print(f"[DEBUG MAIN] Using existing model checkpoint: {ckpt_expected}")
     else:
         print(f"[DEBUG MAIN] No checkpoint found at {ckpt_expected}, running training...")
-        ckpt_path = train_realnvp(cfg)          # does the heavy lifting
+        trainer = TRAINER_REGISTRY[cfg.get("model_type", "realnvp")]
+        ckpt_path = trainer(cfg, target)  # does the heavy lifting
         shutil.copy2(ckpt_path, ckpt_expected)  # standardised name inside outputs/
         _LOG.info("Checkpoint copied to %s", ckpt_expected)
         print(f"[DEBUG MAIN] Training completed, checkpoint saved to {ckpt_expected}")
@@ -146,8 +154,18 @@ def _evaluate(cfg: Dict[str, Any], exp_dir: Path):
     print(f"[DEBUG MAIN] Starting evaluation phase")
     # We point the evaluator sub-modules *into*   outputs/<name>/…
     cfg_eval = copy.deepcopy(cfg)  # avoid polluting the original dict
-    cfg_eval["evaluator"]["plot_dir"]   = str(exp_dir / "plots")
+    
+    # Ensure evaluator section exists and has the required fields
+    if "evaluator" not in cfg_eval:
+        cfg_eval["evaluator"] = {}
+    
+    # Set plot and results directories
+    cfg_eval["evaluator"]["plot_dir"] = str(exp_dir / "plots")
     cfg_eval["evaluator"]["results_dir"] = str(exp_dir)
+    
+    # Make sure they exist
+    Path(cfg_eval["evaluator"]["plot_dir"]).mkdir(exist_ok=True, parents=True)
+    Path(cfg_eval["evaluator"]["results_dir"]).mkdir(exist_ok=True, parents=True)
 
     # -- 1) swap-rate (produces JSON summary) -------------------------------
     print(f"[DEBUG MAIN] Running swap-rate evaluation")
@@ -184,6 +202,8 @@ def main() -> None:
                    help="Evaluate model and generate plots")
     p.add_argument("--run-all", action="store_true",
                    help="Do both training and evaluation")
+    p.add_argument("--cpu", action="store_true",
+                   help="Force CPU usage even if GPU is available")
     args = p.parse_args()
 
     if not (args.train or args.evaluate or args.run_all):
@@ -195,12 +215,22 @@ def main() -> None:
     print(f"[DEBUG MAIN] Experiment directory: {exp_dir}")
     
     print(f"[DEBUG MAIN] Running with options: train={args.train}, evaluate={args.evaluate}, run-all={args.run_all}")
+    
+    # Use CPU if explicitly requested
+    if args.cpu:
+        device = torch.device("cpu")
+        # Override config device for all downstream code
+        cfg["device"] = "cpu"
+    else:
+        device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
 
     if args.run_all:
-        _train(cfg, exp_dir)
+        target = build_target(cfg, device)
+        _train(cfg, exp_dir, target)
         _evaluate(cfg, exp_dir)
     elif args.train:
-        _train(cfg, exp_dir)
+        target = build_target(cfg, device)
+        _train(cfg, exp_dir, target)
     elif args.evaluate:
         _evaluate(cfg, exp_dir)
     

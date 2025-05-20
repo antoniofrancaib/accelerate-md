@@ -35,4 +35,4 @@ venv/
 
 # Weights & Biases
 wandb/
-configs/logger/wandb.yaml
+configs/wandb.yaml

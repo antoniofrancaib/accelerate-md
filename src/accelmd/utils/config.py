@@ -17,6 +17,14 @@ def load_config(config_path: str):
     """
     with open(config_path, 'r') as f:
         config_part = yaml.safe_load(f)
+    
+    # ------------------------------------------------------------------
+    #  New: ensure a valid `model_type` key is present for flow selection
+    # ------------------------------------------------------------------
+    if isinstance(config_part, dict):
+        config_part.setdefault("model_type", "realnvp")
+        if config_part["model_type"] not in ("realnvp", "tarflow"):
+            raise ValueError(f"Unsupported model_type {config_part['model_type']}. Expected 'realnvp' or 'tarflow'.")
     return config_part or {}
 
 

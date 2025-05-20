@@ -16,8 +16,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from src.accelmd.utils.config import load_config
-from src.accelmd.data.gmm import TemperedGMMPairDataset
-from src.accelmd.targets.gmm import GMM
+from src.accelmd.data.tempered_pair import TemperedPairDataset
 from src.accelmd.models.realnvp import create_realnvp_flow
 from src.accelmd.utils.gmm_modes import generate_gmm_modes
 
@@ -80,9 +79,9 @@ def _scheduler(optimiser: optim.Optimizer,
 
 
 
-def train_realnvp(cfg: Dict[str, Any]) -> Path:
+def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     """Main training routine – returns path to best checkpoint."""
-    print(f"[DEBUG] Starting RealNVP training with dim={cfg['gmm']['dim']}, n_mixes={cfg['gmm']['n_mixes']}")
+    print(f"[DEBUG] Starting RealNVP training for target type={cfg['target']['type']}")
     device = torch.device(cfg.get("device", "cpu"))
     print(f"[DEBUG] Using device: {device}")
 
@@ -91,62 +90,39 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     # ───────────────────────────────────────────────────
     ckpt_dir = Path(cfg["trainer"]["realnvp"]["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    plot_dir = Path(cfg["evaluator"]["plot_dir"])
+    
+    # Get plot_dir from evaluator section if available, otherwise from output section
+    if "evaluator" in cfg and "plot_dir" in cfg["evaluator"]:
+        plot_dir = Path(cfg["evaluator"]["plot_dir"])
+    elif "output" in cfg and "plots_dir" in cfg["output"]:
+        plot_dir = Path(cfg["output"]["plots_dir"])
+    else:
+        # Fallback to a default location
+        plot_dir = Path("plots")
+    
     plot_dir.mkdir(parents=True, exist_ok=True)
     print(f"[DEBUG] Created output directories")
 
     # ───────────────────────────────────────────────────
-    # 1. Build target GMM
+    # 1. Prepare target distributions
     # ───────────────────────────────────────────────────
-    print(f"[DEBUG] Building GMM distribution...")
-    gmm_cfg = cfg["gmm"]
-    gmm = GMM(
-        gmm_cfg["dim"],
-        gmm_cfg["n_mixes"],
-        gmm_cfg["loc_scaling"],
-        device=device,
-    )
+    if target is None:
+        from src.accelmd.targets import build_target
+        target = build_target(cfg, torch.device(cfg.get("device", "cpu")))
 
-    # Decide whether to use user-provided mode parameters or generate uniform ones
-    custom_modes = gmm_cfg.get("custom_modes", True)
-
-    with torch.no_grad():
-        if custom_modes:
-            print(f"[DEBUG] Using custom GMM modes")
-            # Fall back to previous behaviour but guard against missing keys
-            if "locations" in gmm_cfg:
-                gmm.locs.copy_(torch.tensor(gmm_cfg["locations"], device=device))
-            if "scales" in gmm_cfg:
-                gmm.scale_trils.copy_(torch.tensor(gmm_cfg["scales"], device=device))
-            if "weights" in gmm_cfg:
-                gmm.cat_probs.copy_(torch.tensor(gmm_cfg["weights"], device=device))
-        else:
-            print(f"[DEBUG] Generating {gmm_cfg['mode_arrangement']} GMM modes for dim={gmm_cfg['dim']}")
-            # Use our new utility function to generate mode locations in any dimension
-            dim = gmm_cfg["dim"]
-            n_mixes = gmm_cfg["n_mixes"]
-            mode_arrangement = gmm_cfg.get("mode_arrangement", "circle")
-            
-            # Generate mode locations
-            locs = generate_gmm_modes(n_mixes, dim, mode_arrangement, gmm_cfg, device)
-            print(f"[DEBUG] Generated {locs.shape} mode locations")
-            gmm.locs.copy_(locs)
-            
-            # Isotropic covariance with specified scale
-            scale_val = float(gmm_cfg.get("uniform_mode_scale", 0.25))
-            scale_tril = torch.diag(torch.full((dim,), scale_val, device=device))
-            gmm.scale_trils.copy_(torch.stack([scale_tril] * n_mixes))
-            
-            # Uniform mixture weights
-            gmm.cat_probs.copy_(torch.full((n_mixes,), 1.0 / n_mixes, device=device))
-    
-    print(f"[DEBUG] GMM created with dim={gmm.dim}, n_mixes={gmm.n_mixes}")
-
-    # Temperatures
+    low_tgt = target
     t_low = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
-    hi_gmm = gmm.tempered_version(t_high, scaling_method="sqrt")
-    print(f"[DEBUG] Created tempered GMM with T_low={t_low}, T_high={t_high}")
+    hi_tgt = low_tgt.tempered_version(t_high)
+
+    # If the provided target has an attribute 'dim', use it, otherwise infer from a sample
+    if hasattr(low_tgt, 'dim'):
+        target_dim = low_tgt.dim
+    else:
+        target_dim = low_tgt.sample((1,)).shape[-1]
+
+    # Determine n_modes (for wandb naming if applicable)
+    n_modes = getattr(low_tgt, 'n_mixes', target_dim)
 
     # ───────────────────────────────────────────────────
     # 2. Dataset
@@ -155,11 +131,12 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     tr_cfg = cfg["trainer"]["realnvp"]["training"]
     n_samples = tr_cfg.get("n_samples", 50_000)
     print(f"[DEBUG] Generating {n_samples} data samples")
-    dataset = TemperedGMMPairDataset(gmm,
-                                     n_samples,
-                                     temp_high=t_high,
-                                     temp_low=t_low,
-                                     temp_scaling_method="sqrt")
+    dataset = TemperedPairDataset(
+        low_target=low_tgt,
+        high_target=hi_tgt,
+        n_samples=n_samples,
+        noise_std=float(tr_cfg.get("noise_std", 0.0))
+    )
     val_split = tr_cfg["val_split"]
     val_len = int(len(dataset) * val_split)
     train_len = len(dataset) - val_len
@@ -179,17 +156,27 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
     # ───────────────────────────────────────────────────
     print(f"[DEBUG] Creating RealNVP model...")
     model_cfg = copy.deepcopy(cfg["trainer"]["realnvp"]["model"])
-    model_cfg["dim"] = gmm_cfg["dim"]  # Ensure the flow model uses the same dimension as GMM
+    model_cfg["dim"] = target_dim  # Ensure the flow model uses the same dimension as GMM
     flow = create_realnvp_flow(model_cfg).to(device)
     print(f"[DEBUG] Created RealNVP flow with {model_cfg['n_couplings']} couplings, dim={model_cfg['dim']}, hidden_dim={model_cfg['hidden_dim']}")
     
     # Initialize weights with smaller values to improve numerical stability
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
-            # Use a smaller initialization scale
-            torch.nn.init.xavier_normal_(m.weight, gain=0.5)
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
+            # Skip final layers in each coupling block which are already zero-initialized
+            # Check if this is one of the final layers in a coupling block
+            is_final_layer = False
+            for coupling in flow.couplings:
+                if m is coupling.s_net[-1] or m is coupling.t_net[-1]:
+                    is_final_layer = True
+                    break
+                
+            # Only initialize non-final layers
+            if not is_final_layer:
+                # Use a smaller initialization scale
+                torch.nn.init.xavier_normal_(m.weight, gain=0.5)
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
             
     flow.apply(init_weights)
     logger.info("Model initialized with stabilized weight initialization")
@@ -214,7 +201,7 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
                          eta_min_factor=eta_min_factor)
     print(f"[DEBUG] Optimizer and scheduler created")
 
-    _init_wandb(cfg, gmm.locs.shape[0])
+    _init_wandb(cfg, n_modes)
 
     # ───────────────────────────────────────────────────
     # 4. Training loop
@@ -238,27 +225,27 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
 
             # High→Low
             y_lo, ld_inv = flow.inverse(xb_hi)
-            loss_hl = -(gmm.log_prob(y_lo) + ld_inv).mean()
+            loss_hl = -(low_tgt.log_prob(y_lo) + ld_inv).mean()
 
             # Low→High
             y_hi, ld_fwd = flow.forward(xb_lo)
-            loss_lh = -(hi_gmm.log_prob(y_hi) / t_high + ld_fwd).mean()
+            loss_lh = -(hi_tgt.log_prob(y_hi) + ld_fwd).mean()
 
             # small pairwise stabiliser
             mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
 
             # Check for NaN values and report which component is causing them
             if torch.isnan(loss_hl):
-                gmm_log_prob = gmm.log_prob(y_lo).mean()
-                logger.warning(f"NaN in loss_hl: gmm_log_prob={gmm_log_prob.item():.4f}, ld_inv={ld_inv.mean().item():.4f}")
+                low_log_prob = low_tgt.log_prob(y_lo).mean()
+                logger.warning(f"NaN in loss_hl: low_log_prob={low_log_prob.item():.4f}, ld_inv={ld_inv.mean().item():.4f}")
                 # Clip extremely negative values to prevent NaN
-                loss_hl = -torch.clamp(gmm.log_prob(y_lo) + ld_inv, min=-1e6, max=1e6).mean()
+                loss_hl = -torch.clamp(low_tgt.log_prob(y_lo) + ld_inv, min=-1e6, max=1e6).mean()
 
             if torch.isnan(loss_lh):
-                hi_log_prob = hi_gmm.log_prob(y_hi).mean()
+                hi_log_prob = hi_tgt.log_prob(y_hi).mean()
                 logger.warning(f"NaN in loss_lh: hi_log_prob={hi_log_prob.item():.4f}, ld_fwd={ld_fwd.mean().item():.4f}")
                 # Clip extremely negative values to prevent NaN
-                loss_lh = -torch.clamp(hi_gmm.log_prob(y_hi) / t_high + ld_fwd, min=-1e6, max=1e6).mean()
+                loss_lh = -torch.clamp(hi_tgt.log_prob(y_hi) + ld_fwd, min=-1e6, max=1e6).mean()
 
             if torch.isnan(mse):
                 logger.warning(f"NaN in MSE stabilizer")
@@ -294,9 +281,9 @@ def train_realnvp(cfg: Dict[str, Any]) -> Path:
             for xb_hi, xb_lo in vloader:
                 xb_hi, xb_lo = xb_hi.to(device), xb_lo.to(device)
                 y_lo, ld_inv = flow.inverse(xb_hi)
-                loss_hl = -(gmm.log_prob(y_lo) + ld_inv).mean()
+                loss_hl = -(low_tgt.log_prob(y_lo) + ld_inv).mean()
                 y_hi, ld_fwd = flow.forward(xb_lo)
-                loss_lh = -(hi_gmm.log_prob(y_hi) / t_high + ld_fwd).mean()
+                loss_lh = -(hi_tgt.log_prob(y_hi) + ld_fwd).mean()
                 mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
                 
                 # Handle NaNs in validation too
@@ -368,6 +355,7 @@ if __name__ == "__main__":
     cfg = load_config(args.config)
     if args.no_wandb:
         cfg["wandb"] = False
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = train_realnvp(cfg)
     print(f"✅ trained flow saved to {ckpt_path}")
     

@@ -22,13 +22,17 @@ class _RealNVPCoupling(nn.Module):
 
         # Simple 2-layer MLPs for scale (s) and translation (t)
         def _net():
-            return nn.Sequential(
+            net = nn.Sequential(
                 nn.Linear(in_dim, hidden_dim),
                 nn.ReLU(),
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU(),
                 nn.Linear(hidden_dim, in_dim),
             )
+            # Zero-initialize the final layer to make the flow start as identity
+            nn.init.zeros_(net[-1].weight)
+            nn.init.zeros_(net[-1].bias)
+            return net
 
         self.s_net = _net()
         self.t_net = _net()
@@ -37,7 +41,7 @@ class _RealNVPCoupling(nn.Module):
         x_masked = x * self.mask  # part that remains unchanged
         s = self.s_net(x_masked) * (1.0 - self.mask)
         # Clamp the scale to avoid numerical overflow in exp(s)
-        s = torch.clamp(s, min=-7.0, max=7.0)
+        s = torch.clamp(s, min=-5.0, max=5.0)
         t = self.t_net(x_masked) * (1.0 - self.mask)
 
         y = x_masked + (1.0 - self.mask) * (x * torch.exp(s) + t)
@@ -48,7 +52,7 @@ class _RealNVPCoupling(nn.Module):
         y_masked = y * self.mask
         s = self.s_net(y_masked) * (1.0 - self.mask)
         # Clamp the scale for stability
-        s = torch.clamp(s, min=-7.0, max=7.0)
+        s = torch.clamp(s, min=-5.0, max=5.0)
         t = self.t_net(y_masked) * (1.0 - self.mask)
 
         x = y_masked + (1.0 - self.mask) * ((y - t) * torch.exp(-s))
