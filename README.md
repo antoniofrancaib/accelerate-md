@@ -1,13 +1,39 @@
-This is the repository for the MLMI MPhil project: Accelerating Molecular Dynamics.
+This is the repository for the MLMI MPhil project: Accelerating Molecular Dynamics via Neural Networks.
 
 🧬 Tutorial notebook to get started: [Introductory notebook](https://github.com/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb) &nbsp; [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb)
 
 ✍️ New to molecular simulations? Here’s a curated reading + watch list for beginners: [RESOURCES](notebooks/RESOURCES.md)
 
+## Problem: 
+Transferable normalizing-flow swap kernels boost replica-exchange acceptance to sample Boltzmann distributions of *unseen* peptides faster than vanilla Parallel Tempering.  
 
-The pipeline is super user-friendly structured. Create a proper conda. Submit the job to the cluster. Everything is centralized in configs. 
+## Quick start  
+The pipeline I wrote is *super* user-friendly structured. Create a proper conda environement with 'environment.yml'. Clone → tweak `configs/*.yaml` → run:
 
-The expected output structure is the following. 
+```bash
+python main.py --run-all --config configs/{exp-config}.yaml 
+```
+
+For n temperatures (n = len(temperatures)), the expected output structure is: 
+outputs/<experiment_name>/
+├── config.yaml
+├── experiment.log
+├── models/
+│   ├── flow_<T0>_<T1>.pt
+│   ├── flow_<T1>_<T2>.pt
+│   └── … (n−1 files)
+├── metrics/
+│   ├── swap_rate_flow_<T0>_<T1>.json
+│   ├── swap_rate_flow_<T1>_<T2>.json
+│   └── … (n−1 files)
+└── plots/
+    ├── bidirectional_verification_<T0>_<T1>.png
+    ├── bidirectional_verification_<T1>_<T2>.png
+    ├── acceptance_autocorrelation_<T0>_<T1>.png
+    ├── acceptance_autocorrelation_<T1>_<T2>.png
+    ├── moving_average_acceptance_<T0>_<T1>.png
+    └── moving_average_acceptance_<T1>_<T2>.png
+
 
 ### Clone the Repository
 ```bash
