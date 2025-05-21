@@ -45,7 +45,7 @@ nvidia-smi
 # Run the full pipeline (train + evaluate)
 # ———> note we drop --experiment-name since main.py doesn't accept it
 # ———> model will be saved to outputs/${name}/model.pt and used by the evaluator
-CMD="python -u main.py --run-all --config $CONFIG"
+CMD="stdbuf -oL python -u main.py --run-all --config $CONFIG"
 
 echo "============================================="
 echo "Starting AccelMD GMM experiment"

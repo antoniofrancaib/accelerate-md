@@ -14,7 +14,9 @@ The pipeline I wrote is *super* user-friendly structured. Create a proper conda 
 python main.py --run-all --config configs/{exp-config}.yaml 
 ```
 
-For n temperatures (n = len(temperatures)), the expected output structure is: 
+For n temperatures (n = len(temperatures)), the expected output structure is:
+
+```bash
 outputs/<experiment_name>/
 ├── config.yaml
 ├── experiment.log
@@ -29,10 +31,15 @@ outputs/<experiment_name>/
 └── plots/
     ├── bidirectional_verification_<T0>_<T1>.png
     ├── bidirectional_verification_<T1>_<T2>.png
+    ├── ...
     ├── acceptance_autocorrelation_<T0>_<T1>.png
     ├── acceptance_autocorrelation_<T1>_<T2>.png
+    ├── ...
     ├── moving_average_acceptance_<T0>_<T1>.png
-    └── moving_average_acceptance_<T1>_<T2>.png
+    ├── moving_average_acceptance_<T1>_<T2>.png
+    ├── ...
+    └── … num_metrics*(n−1 files)
+```
 
 
 ### Clone the Repository
