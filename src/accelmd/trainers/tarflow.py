@@ -36,12 +36,15 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
     # 2) Prepare target ----------------------------------------
     if target is None:
         from src.accelmd.targets import build_target
-        target = build_target(cfg, device)
+        base_tgt = build_target(cfg, device)
+    else:
+        base_tgt = target
 
-    low_tgt = target
     t_low  = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
-    hi_tgt = low_tgt.tempered_version(t_high)
+
+    low_tgt = base_tgt.tempered_version(t_low)
+    hi_tgt  = base_tgt.tempered_version(t_high)
 
     if hasattr(low_tgt, 'dim'):
         target_dim = low_tgt.dim

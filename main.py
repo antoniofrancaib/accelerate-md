@@ -48,7 +48,7 @@ _LOG = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # TRAIN
 # ─────────────────────────────────────────────────────────────────────────────
-def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: Path):
+def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_dir: Path):
     """Re-use the logic from scripts/train.py to make the 2×2 sanity figure.
     
     For dimensions higher than 2, only the first two dimensions are shown in the plot.
@@ -58,8 +58,12 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
     t_low  = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
-    low_tgt  = build_target(cfg, device)
-    high_tgt = low_tgt.tempered_version(t_high)
+    suffix = f"{t_low:.2f}_{t_high:.2f}"
+    
+    low_tgt = build_target(cfg, device)
+    base_tgt = low_tgt
+    low_tgt = base_tgt.tempered_version(t_low)
+    high_tgt = base_tgt.tempered_version(t_high)
 
     # --- load flow -----------------------------------------------------------
     model_type = cfg.get("model_type", "realnvp")
@@ -93,6 +97,9 @@ def _generate_bidirectional_plot(cfg: Dict[str, Any], ckpt_path: Path, out_png: 
     _scatter(ax[1, 0], x_lo.cpu(),    f"True Low-T (T={t_low})")
     _scatter(ax[1, 1], x_lo2hi.cpu(), "Mapped Low→High")
     plt.tight_layout()
+    
+    # Include temperature suffix in the filename
+    out_png = out_dir / f"bidirectional_verification_{suffix}.png"
     fig.savefig(out_png, dpi=200)
     plt.close(fig)
 
@@ -121,7 +128,7 @@ def _train(cfg: Dict[str, Any], target):
     _generate_bidirectional_plot(
         cfg,
         ckpt_expected,
-        Path(cfg["output"]["plots_dir"]) / "bidirectional_verification.png",
+        Path(cfg["output"]["plots_dir"]),
     )
     _LOG.info("Bidirectional verification plot generated")
 
@@ -203,18 +210,32 @@ def main() -> None:
     # First, load the config to get the log file path
     _LOG.info("Loading config from %s", args.config)
     cfg = load_config(args.config)
-    _LOG.info("Experiment directory: %s", cfg["output"]["base_dir"])
     
-    # Create output directories
-    for key in ("checkpoints", "plots_dir", "results_dir"):
-        Path(cfg["output"][key]).mkdir(parents=True, exist_ok=True)
+    # ─── START experiment dir & logging setup ───
+    name = cfg.get("name") or Path(args.config).stem
+    # derive_output_paths already put <outputs>/<name> in base_dir
+    exp_dir = Path(cfg["output"]["base_dir"])
 
+    # Standard sub-directories (models ≡ checkpoints, metrics ≡ results)
+    models_dir   = exp_dir / "models"
+    metrics_dir  = exp_dir / "metrics"
+    plots_dir    = exp_dir / "plots"
+
+    for d in (models_dir, metrics_dir, plots_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Copy original YAML once (over-write if re-run)
+    shutil.copy(args.config, exp_dir / "config.yaml")
+
+    # Configure root logging
+    log_file = exp_dir / "experiment.log"
+    configure_logging(log_file)
+    # ─── END experiment dir & logging setup ───
+    
+    _LOG.info("Experiment directory: %s", exp_dir)
+    
     # Configure logging to write to both file and console
     # This will update the root logger, affecting all modules
-    log_file = cfg["output"]["log_file"]
-    configure_logging(log_file)
-    
-    # Log detailed config information
     _LOG.info("Loaded config:\n%s", yaml.dump(cfg, sort_keys=False))
     
     _LOG.info("Running with options: train=%s, evaluate=%s, run-all=%s", 
@@ -227,16 +248,62 @@ def main() -> None:
         cfg["device"] = "cpu"
     else:
         device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
-
+    
     if args.run_all:
-        target = build_target(cfg, device)
-        _train(cfg, target)
-        _evaluate(cfg)
-    elif args.train:
-        target = build_target(cfg, device)
-        _train(cfg, target)
-    elif args.evaluate:
-        _evaluate(cfg)
+        temps = cfg["pt"]["temperatures"]
+        for i in range(len(temps) - 1):
+            t_low, t_high = temps[i], temps[i + 1]
+
+            # ---- per-pair cfg tweaks -------------------------------------
+            suffix = f"{t_low:.2f}_{t_high:.2f}"
+            cfg["pt"].update({"temp_low": t_low, "temp_high": t_high})
+
+            # unified directories
+            cfg["output"].update({
+                "checkpoints": str(models_dir),  # for trainer backward-compat
+                "model_path": str(models_dir / f"flow_{suffix}.pt"),
+                "plots_dir": str(plots_dir),
+                "results_dir": str(metrics_dir),
+                "metric_template": f"swap_rate_flow_{suffix}.json",
+                "metric_json": str(metrics_dir / f"swap_rate_flow_{suffix}.json"),
+            })
+
+            # ---- TRAIN ---------------------------------------------------
+            if args.train or args.run_all:
+                _LOG.info("=== Pair %s: Training ===", suffix)
+                target = build_target(cfg, device)
+                _train(cfg, target)
+
+            # ---- EVALUATE -----------------------------------------------
+            if args.evaluate or args.run_all:
+                _LOG.info("=== Pair %s: Evaluating ===", suffix)
+                _evaluate(cfg)
+            
+    elif args.train or args.evaluate:
+        # Re-enter the loop with run_all=False so we honour the flags
+        temps = cfg["pt"]["temperatures"]
+        for i in range(len(temps) - 1):
+            t_low, t_high = temps[i], temps[i + 1]
+            suffix = f"{t_low:.2f}_{t_high:.2f}"
+
+            cfg["pt"].update({"temp_low": t_low, "temp_high": t_high})
+            cfg["output"].update({
+                "checkpoints": str(models_dir),
+                "model_path": str(models_dir / f"flow_{suffix}.pt"),
+                "plots_dir": str(plots_dir),
+                "results_dir": str(metrics_dir),
+                "metric_template": f"swap_rate_flow_{suffix}.json",
+                "metric_json": str(metrics_dir / f"swap_rate_flow_{suffix}.json"),
+            })
+
+            if args.train:
+                _LOG.info("=== Pair %s: Training-only ===", suffix)
+                target = build_target(cfg, device)
+                _train(cfg, target)
+
+            if args.evaluate:
+                _LOG.info("=== Pair %s: Evaluation-only ===", suffix)
+                _evaluate(cfg)
     
     _LOG.info("Experiment completed successfully")
 

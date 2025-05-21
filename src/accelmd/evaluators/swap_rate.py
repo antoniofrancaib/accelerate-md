@@ -10,6 +10,7 @@ from typing import List, Dict, Any
 
 import numpy as np
 import torch
+import yaml
 
 from src.accelmd.utils.config import load_config
 from src.accelmd.targets import build_target
@@ -292,20 +293,21 @@ def _fmt_temp(t: float) -> str:
 # ------------------------------------------------------------------
 
 
-def _pair_suffix(t_low: float, t_high: float) -> str:
-    """Return filename-safe suffix *including* the ``flow_`` prefix.
-
-    Examples
-    --------
-    >>> _pair_suffix(1.0, 1.6681005)
-    'flow_1.00_to_1.67'
-
-    The raw ``str`` representation is used to mirror exactly the checkpoint
-    names created by ``train_realnvp`` such that post-processing outputs can
-    simply prepend their own descriptor (e.g. ``moving_average_acceptance``)
-    while sharing the same pair identifier.
-    """
-    return f"flow_{t_low:.2f}_to_{t_high:.2f}"
+# This function is no longer needed as we use explicit suffixes in main.py
+# def _pair_suffix(t_low: float, t_high: float) -> str:
+#     """Return filename-safe suffix *including* the ``flow_`` prefix.
+# 
+#     Examples
+#     --------
+#     >>> _pair_suffix(1.0, 1.6681005)
+#     'flow_1.00_to_1.67'
+# 
+#     The raw ``str`` representation is used to mirror exactly the checkpoint
+#     names created by ``train_realnvp`` such that post-processing outputs can
+#     simply prepend their own descriptor (e.g. ``moving_average_acceptance``)
+#     while sharing the same pair identifier.
+#     """
+#     return f"flow_{t_low:.2f}_to_{t_high:.2f}"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -348,13 +350,17 @@ def run(cfg: dict) -> None:  # noqa: D401 – imperative API
     # Output directories
     results_dir = Path(cfg["output"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate suffix for this temperature pair
+    suffix = f"{t_low:.2f}_{t_high:.2f}"
 
     # ------------------------------------------------------------------
     # 2) Build targets & (optionally) flow model
     # ------------------------------------------------------------------
     logger.info("Building target distribution...")
-    low_tgt = build_target(cfg, device)
-    hi_tgt  = low_tgt.tempered_version(t_high)
+    base_tgt = build_target(cfg, device)
+    low_tgt = base_tgt.tempered_version(t_low)
+    hi_tgt  = base_tgt.tempered_version(t_high)
 
     # Flow model (may raise if checkpoint not found)
     logger.info("Loading flow model")
@@ -426,8 +432,12 @@ Swap Pair   |  Naive PT  |  Flow-based T-GePT
         "flow_hist": flow_hist,
     }
 
-    # Use the metric_json path from config to ensure consistent file location
+    # Use the metric_json path from config which is now properly set for this temperature pair
     json_path = cfg["output"]["metric_json"]
+    
+    # Make sure the directory exists
+    Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+    
     with open(json_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
     logger.info("Wrote summary to %s", json_path)

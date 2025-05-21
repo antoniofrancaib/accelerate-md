@@ -4,6 +4,7 @@ Configuration utilities for loading and merging YAML configuration files.
 
 import yaml
 from pathlib import Path
+import logging
 
 
 def load_config(config_path: str) -> dict:
@@ -42,6 +43,22 @@ def load_config(config_path: str) -> dict:
     cfg["output"]["metric_json"] = str(
         Path(cfg["output"]["results_dir"]) / filename
     )
+
+    # ─── START multi‐temp loader ─────────────
+    pt_cfg = cfg.get("pt", {})
+    temps = pt_cfg.get("temperatures", None)
+    if temps is None:
+        low = pt_cfg.get("temp_low")
+        high = pt_cfg.get("temp_high")
+        temps = [low, high]
+    else:
+        if "temp_low" in pt_cfg or "temp_high" in pt_cfg:
+            logging.getLogger(__name__).warning(
+                "Both pt.temperatures list and temp_low/temp_high provided; using pt.temperatures."
+            )
+    temps = sorted([float(t) for t in temps])
+    cfg["pt"]["temperatures"] = temps
+    # ─── END multi‐temp loader ───────────────
 
     return cfg
 

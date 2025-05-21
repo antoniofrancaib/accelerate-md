@@ -34,8 +34,6 @@ try:
 except ImportError:  # pragma: no cover
     _WANDB_AVAILABLE = False
 
-from src.accelmd.evaluators.swap_rate import _pair_suffix
-
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +96,8 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     # ------------------------------------------------------------------
     results_dir = Path(cfg["output"]["results_dir"])
     t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
+    suffix = f"{t_low:.2f}_{t_high:.2f}"
+    
     naive_hist, flow_hist = _load_histories(results_dir, t_low, t_high, cfg)
 
     swap_interval = int(cfg["pt"].get("swap_interval", 100))
@@ -162,9 +162,12 @@ def run(cfg: Dict[str, Any]) -> None:  # noqa: D401 – imperative API
     plt.legend()
     plt.tight_layout()
 
+    # Use plot directory from config
     plot_dir = Path(cfg["output"]["plots_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plot_dir / f"moving_average_acceptance_{_pair_suffix(t_low, t_high)}.png"
+    
+    # Create plot filename with correct suffix
+    out_path = plot_dir / f"moving_average_acceptance_{suffix}.png"
     plt.savefig(out_path, dpi=200)
     logger.info("Moving-average plot saved to %s", out_path)
 

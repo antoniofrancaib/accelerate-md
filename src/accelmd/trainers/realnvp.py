@@ -101,12 +101,15 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     # ───────────────────────────────────────────────────
     if target is None:
         from src.accelmd.targets import build_target
-        target = build_target(cfg, torch.device(cfg.get("device", "cpu")))
+        base_tgt = build_target(cfg, torch.device(cfg.get("device", "cpu")))
+    else:
+        base_tgt = target
 
-    low_tgt = target
     t_low = float(cfg["pt"]["temp_low"])
     t_high = float(cfg["pt"]["temp_high"])
-    hi_tgt = low_tgt.tempered_version(t_high)
+
+    low_tgt = base_tgt.tempered_version(t_low)
+    hi_tgt  = base_tgt.tempered_version(t_high)
 
     # If the provided target has an attribute 'dim', use it, otherwise infer from a sample
     if hasattr(low_tgt, 'dim'):
@@ -302,6 +305,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = flow.state_dict()
+            # Use standardized path from config
             checkpoint_path = Path(cfg["output"]["model_path"])
             torch.save(best_state, checkpoint_path)
             logger.info("New best model saved to %s", checkpoint_path)
