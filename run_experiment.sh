@@ -2,7 +2,7 @@
 
 ####### SBATCH directives begin here ###############################
 #SBATCH -J gmm_experiment              # Job name
-#SBATCH -A MLMI-jaf98-SL2-GPU          # GPU job account
+#SBATCH -A MLMI-<your-account>-SL2-GPU          # GPU job account
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4              # Number of CPU cores
