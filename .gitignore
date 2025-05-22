@@ -2,6 +2,8 @@ datasets/
 !datasets/aldp/position_min_energy.pt
 plots/
 results/
+scripts/ 
+diagrams/
 
 __pycache__/
 *.pyc
@@ -15,7 +17,7 @@ checkpoints/
 tests/
 train_flow.sh
 evaluate_flow.sh
-run_gmm_experiment.sh
+run_experiment.sh
 outputs/ 
 
 env/

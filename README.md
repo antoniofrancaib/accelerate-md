@@ -1,5 +1,7 @@
 This is the repository for the MLMI MPhil project: Accelerating Molecular Dynamics via Neural Networks. (work still in progress)
 
+Toy [notebook](https://github.com/antoniofrancaib/accelerate-md/blob/main/notebooks/toy.ipynb) &nbsp; [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/toy.ipynb)
+
 🧬 Tutorial notebook to get started: (currently is quite toy, just put it here to remind me in the future to do when all the job is done!) [Introductory notebook](https://github.com/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb) &nbsp; [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/introduction.ipynb)
 
 ✍️ New to molecular simulations? Here’s a curated reading + watch list for beginners: (currently is quite toy, just put it here to remind me in the future to do when all the job is done!) [RESOURCES](notebooks/RESOURCES.md)
@@ -62,4 +64,16 @@ outputs/<experiment_name>/
     ├── moving_average_acceptance_<T1>_<T2>.png
     ├── ...
     └── … num_metrics*(n−1 files)
+```
+
+
+**Pipeline explained:** (this is to be improved in the future )
+```bash
+┌──────── main.py ────────┐
+│  loads cfg              │
+│  builds target          │──►  src/accelmd/targets/*
+│  builds PT sampler      │
+│  trains flow (trainer)  │──►  src/accelmd/trainers/*
+│  runs evaluators        │
+└─────────────────────────┘
 ```

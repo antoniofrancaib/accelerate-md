@@ -3,21 +3,23 @@ import yaml
 from PIL import Image
 import os
 import mdtraj
+from pathlib import Path
+from typing import List
 
-from main.targets.base_target import TargetDistribution
-from main.targets.aldp_boltzmann_dist import AldpBoltzmann
-from main.utils.aldp_utils import evaluate_aldp, filter_chirality
-from main.utils.se3_utils import remove_mean
+from src.accelmd.targets.base import TargetDistribution
+from src.accelmd.targets.aldp.boltzmann import AldpBoltzmann as Boltzmann
+from src.accelmd.utils.aldp_utils import evaluate_aldp, filter_chirality
+from src.accelmd.utils.se3_utils import remove_mean
 
 
-class AldpPotentialCart(AldpBoltzmann, TargetDistribution):
+class AldpPotentialCart(Boltzmann, TargetDistribution):
     def __init__(self, data_path=None, temperature=1000, energy_cut=1.e+8,
                  energy_max=1.e+20, n_threads=4, transform='cartesian',
                  ind_circ_dih=[], shift_dih=False,
                  shift_dih_params={'hist_bins': 100},
                  default_std={'bond': 0.005, 'angle': 0.15, 'dih': 0.2},
                  env='vacuum', device='cpu'):
-        AldpBoltzmann.__init__(
+        Boltzmann.__init__(
             self,
             data_path=data_path,
             temperature=temperature,
@@ -36,16 +38,23 @@ class AldpPotentialCart(AldpBoltzmann, TargetDistribution):
         self.device = device
         self.to(device)
         self.is_molecule = True
-        # internal_data = torch.load('data/aldp/train.pt').to(device)
-        # # self.data = remove_mean(self.coordinate_transform.forward(internal_data)[0], n_particles=22, n_dimensions=3)
-        traj = mdtraj.load("data/aldp/train.h5")
-        traj.center_coordinates()
-        ind = traj.top.select("backbone")
-        traj.superpose(traj, 0, atom_indices=ind, ref_atom_indices=ind)
-        data = traj.xyz
-        self.min_energy_pos_path = data_path
-        self.data = torch.from_numpy(data.astype("float64")).to(device).reshape(-1, self.dim)
+        
+        # Use train.pt directly - position_min_energy.pt was already loaded above for the transforms
+        self.min_energy_pos_path = data_path  # Store for later use
+        
+        # Load from train.pt instead of train.h5
+        train_data = torch.load(os.path.join('datasets', 'aldp', 'train.pt')).to(device)
+        
+        # If we have internal coordinates from train.pt, transform to cartesian
+        if train_data.shape[-1] != self.dim:
+            # Transform from internal to cartesian coordinates
+            cartesian_data, _ = self.coordinate_transform.forward(train_data)
+        else:
+            cartesian_data = train_data
+            
+        self.data = cartesian_data
         self.data = remove_mean(self.data, n_particles=22, n_dimensions=3)
+        
         self.bonds = [
             (0, 1), (1, 2), (1, 3), (1, 4),
             (4, 5), (4, 6), (6, 7), (6, 8),
@@ -54,6 +63,8 @@ class AldpPotentialCart(AldpBoltzmann, TargetDistribution):
             (16, 17), (16, 18), (18, 19), (18, 20),
             (18, 21)
         ]
+        
+        # Setup structure and chemical elements (using hardcoded values since we don't need mdtraj)
         structure_elements = ['C', 
                               'O', 
                               'N', 
@@ -69,15 +80,12 @@ class AldpPotentialCart(AldpBoltzmann, TargetDistribution):
                               'HB2', 
                               'HB3']
         chemical_elements = ['H', 'C', 'N', 'O']
-        table, _ = traj.topology.to_dataframe()
-        structure_to_index = {element: idx for idx, element in enumerate(structure_elements)}
-        chemical_to_index = {element: idx for idx, element in enumerate(chemical_elements)}
-        atom_structure_elements = table["name"].values
-        atom_chemical_elements = table["element"].values
-        atom_structure_types = [structure_to_index[element] for element in atom_structure_elements]
-        atom_chemical_types = [chemical_to_index[element] for element in atom_chemical_elements]
-        self.atom_structure_types = torch.tensor(atom_structure_types).to(device)
-        self.atom_chemical_types = torch.tensor(atom_chemical_types).to(device)
+        
+        # Create dummy atom types (22 atoms)
+        atom_structure_types = torch.zeros(22, dtype=torch.long, device=device)
+        atom_chemical_types = torch.zeros(22, dtype=torch.long, device=device)
+        self.atom_structure_types = atom_structure_types
+        self.atom_chemical_types = atom_chemical_types
     
     def get_min_energy_position(self):
         x_init = torch.load(self.min_energy_pos_path, map_location=self.device)
@@ -107,7 +115,9 @@ class AldpPotentialCart(AldpBoltzmann, TargetDistribution):
         true_samples = self.coordinate_transform.inverse(true_samples.clone().detach())[0]
         evaluate_aldp(samples, true_samples, self.log_prob, self.coordinate_transform, iter, metric_dir, plot_dir, batch_size)
 
-    def plot_samples(self, source: torch.Tensor, target: torch.Tensor, iter: int, metric_dir, plot_dir, batch_size: int):
+    def plot_samples(self, samples_list: List[torch.Tensor], labels_list: List[str], iter: int, metric_dir, plot_dir, batch_size: int):
+        source = samples_list[0]
+        target = samples_list[1]
         self.eval(source, target, iter, metric_dir, plot_dir, batch_size)
         marginal_angle = Image.open(os.path.join(plot_dir, 'marginals_%s_%07i.png' % ("angle", iter + 1)))
         marginal_bond = Image.open(os.path.join(plot_dir, 'marginals_%s_%07i.png' % ("bond", iter + 1)))

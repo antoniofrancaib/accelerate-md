@@ -4,20 +4,21 @@ import yaml
 from PIL import Image
 from typing import List
 import os
+from pathlib import Path
 
-from main.targets.base_target import TargetDistribution
-from main.targets.aldp_boltzmann_dist import AldpBoltzmann
-from main.utils.aldp_utils import evaluate_aldp
+from src.accelmd.targets.base import TargetDistribution
+from src.accelmd.targets.aldp.boltzmann import AldpBoltzmann as Boltzmann
+from src.accelmd.utils.aldp_utils import evaluate_aldp
 
 
-class AldpPotential(AldpBoltzmann, TargetDistribution):
+class AldpPotential(Boltzmann, TargetDistribution):
     def __init__(self, data_path=None, temperature=1000, energy_cut=1.e+8,
                  energy_max=1.e+20, n_threads=4, transform='internal',
                  ind_circ_dih=[], shift_dih=False,
                  shift_dih_params={'hist_bins': 100},
                  default_std={'bond': 0.005, 'angle': 0.15, 'dih': 0.2},
                  env='vacuum', device='cpu'):
-        AldpBoltzmann.__init__(
+        Boltzmann.__init__(
             self,
             data_path=data_path,
             temperature=temperature,
@@ -48,7 +49,9 @@ class AldpPotential(AldpBoltzmann, TargetDistribution):
 
         self.dih_ind = dih_ind
         self.ind_circ = ind_circ
-        self.data = torch.load('data/aldp/train.pt').to(device)
+        
+        # Use the datasets directory for loading data
+        self.data = torch.load(os.path.join('datasets', 'aldp', 'train.pt')).to(device)
     
     def log_prob(self, x):
         if x.ndim == 2:
@@ -73,7 +76,9 @@ class AldpPotential(AldpBoltzmann, TargetDistribution):
         samples = samples.clone().detach()
         evaluate_aldp(samples, true_samples, self.log_prob, self.coordinate_transform, iter, metric_dir, plot_dir, batch_size)
 
-    def plot_samples(self, source: torch.Tensor, target: torch.Tensor, iter: int, metric_dir, plot_dir, batch_size: int):
+    def plot_samples(self, samples_list: List[torch.Tensor], labels_list: List[str], iter: int, metric_dir, plot_dir, batch_size: int):
+        source = samples_list[0]
+        target = samples_list[1]
         self.eval(source, target, iter, metric_dir, plot_dir, batch_size)
         marginal_angle = Image.open(os.path.join(plot_dir, 'marginals_%s_%07i.png' % ("angle", iter + 1)))
         marginal_bond = Image.open(os.path.join(plot_dir, 'marginals_%s_%07i.png' % ("bond", iter + 1)))

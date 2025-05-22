@@ -10,7 +10,7 @@ from openmmtools import testsystems
 import mdtraj
 import tempfile
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Union, Tuple, List, Any
 
 import abc
 import yaml
@@ -73,6 +73,19 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
         :type transform: String
         """
         super(AldpBoltzmann, self).__init__()
+        
+        # Store parameters for potential subclasses
+        self.transform_type = transform
+        self.data_path = data_path
+        self.temperature = temperature
+        self.energy_cut = energy_cut
+        self.energy_max = energy_max
+        self.n_threads = n_threads
+        self.shift_dih = shift_dih
+        self.shift_dih_params = shift_dih_params
+        self.default_std = default_std
+        self.env = env
+        self.ind_circ_dih = ind_circ_dih
 
         # Define molecule parameters
         ndim = 66
@@ -179,6 +192,7 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
                                         shift_dih_params=shift_dih_params,
                                         default_std=default_std)
 
+        # Setup distributions based on the transform type
         if n_threads > 1:
             if transform == 'cartesian':
                 self.p = bg.distributions.BoltzmannParallel(system, temperature, 
@@ -201,6 +215,31 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
 
     def performance_metrics(self, samples, log_w, log_q_fn, batch_size):
         return {}
+
+    def sample(self, shape):
+        """Sample from the target distribution.
+        
+        Args:
+            shape: Either an integer or a tuple of integers specifying 
+                  the shape of the sample to generate.
+        
+        Returns:
+            torch.Tensor: Samples with shape (*shape, dim) where dim is the
+                         dimensionality of the configuration space.
+        """
+        # Actual implementation handled by potential subclasses
+        if hasattr(self, 'data'):
+            # If this class has data (AldpPotential or AldpPotentialCart)
+            if isinstance(shape, int):
+                indices = torch.randint(0, self.data.shape[0], (shape,), device=self.data.device)
+            elif isinstance(shape, (list, tuple)):
+                indices = torch.randint(0, self.data.shape[0], shape, device=self.data.device)
+            else:
+                raise ValueError("Shape must be an integer or a tuple of integers")
+            return self.data[indices].to(self.data.device).float()
+        else:
+            # Default implementation for base class - abstract to subclasses
+            raise NotImplementedError("This method should be implemented by a subclass")
 
     def tempered_version(self, temperature=1.0, scaling_method='sqrt'):
         """Return a simple proxy (no variance scaling) for higher temperatures.
@@ -226,8 +265,14 @@ def get_aldp_target(config: dict, device):
     data_path = config.get("data_path")
 
     ind_circ_dih = [0, 1, 2, 3, 4, 5, 8, 9, 10, 13, 15, 16]
-
-    target = AldpBoltzmann(
+    
+    # Choose the right implementation based on the transform type
+    if system_cfg["transform"] == "cartesian":
+        from .cartesian import AldpPotentialCart as TargetClass
+    else:
+        from .potential import AldpPotential as TargetClass
+        
+    target = TargetClass(
         data_path=data_path,
         temperature=system_cfg["temperature"],
         energy_cut=system_cfg["energy_cut"],
@@ -237,6 +282,7 @@ def get_aldp_target(config: dict, device):
         ind_circ_dih=ind_circ_dih,
         shift_dih=system_cfg["shift_dih"],
         env=system_cfg["env"],
+        device=device
     )
     return target.to(device)
 

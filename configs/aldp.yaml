@@ -1,80 +1,74 @@
-# configs/aldp.yaml
-
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp"
+name: "aldp_cart"
 device: "cuda"         # or "cpu"
 
+# ─────────────────────────────────────────────────────────────
 # Which target distribution we'll sample from
-# -------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 target:
-  type: aldp      # ← switch between "aldp" or "gmm"
-  data_path: "./data/aldp/position_min_energy.pt"
-  transform: internal
+  type: aldp
+  data_path: "./datasets/aldp/position_min_energy.pt"
+  transform: cartesian
   env: implicit
 
 # ─────────────────────────────────────────────────────────────
-# Molecular system definition (was in aldp_config.yaml)
+# Molecular system definition
 # ─────────────────────────────────────────────────────────────
 system:
   temperature: 300           # Kelvin
   energy_cut: 1.e8
   energy_max: 1.e20
   n_threads: 64
-  transform: internal        # can be 'internal', 'cartesian', 'mixed'
+  transform: cartesian
   shift_dih: false
-  env: implicit              # or 'vacuum'
+  env: implicit
   data:
-    transform_path: "./data/aldp/position_min_energy.pt"
-
+    transform_path: "./datasets/aldp/position_min_energy.pt"
 # ─────────────────────────────────────────────────────────────
-# Parallel‐Tempering settings (merged aldp_cart & aldp_inter)
+# Parallel‐Tempering settings
 # ─────────────────────────────────────────────────────────────
 pt:
-  temp_low: 1.0
-  temp_high: 20.0
-  total_n_temp: 10
-  temp_schedule: "geom"      # or "linear"
+  temperatures: [1.0, 5.0]
+  temp_low:      1.0
+  temp_high:     20.0
+  total_n_temp:  2
+  temp_schedule: geom
 
-  # chain & step parameters
-  num_chains: 100            # was 100 in aldp_cart.yaml / 10 in aldp_inter.yaml
-  num_steps: 500000          # you could override per‐run via CLI if desired
-  burn_in: 1000              # only in aldp_inter.yaml
-
-  # swap / logging
-  swap_interval: 200
-  check_interval: 10000      # larger interval for heavy workloads
-  step_size: 1e-4            # Langevin step
+  num_chains:    32
+  num_steps:     200000
+  swap_interval: 500
+  check_interval: 10000
+  step_size:     1e-4
 
 # ─────────────────────────────────────────────────────────────
-# Plotting & output (where to save trajectories, figures, etc.)
-# ─────────────────────────────────────────────────────────────
-io:
-  plot_folder: "plots/pt"
-  save_folder: "data/pt"
-
-# ─────────────────────────────────────────────────────────────
-# Evaluation settings (only in aldp_inter.yaml)
+# Evaluation settings
 # ─────────────────────────────────────────────────────────────
 evaluation:
   num_samples_to_plot: 1000000
   num_samples_for_eval:   10000
 
-model_type: tarflow        # choose "realnvp" or "tarflow"
+# ─────────────────────────────────────────────────────────────
+# Flow backend & hyperparameters
+# ─────────────────────────────────────────────────────────────
+model_type: realnvp
 
 trainer:
-  tarflow:
-    checkpoint_dir: checkpoints/tarflow_aldp
+  realnvp:
     model:
-      dim: 60               # internal coords (backbone + sidechain dihedrals)
-      channels: 512
-      num_blocks: 8
-      layers_per_block: 8
+      hidden_dim: 1024
+      n_couplings: 80
+      use_permutation: true
     training:
-      n_epochs: 400
-      batch_size: 512
-      learning_rate: 1e-4
-      warmup_epochs: 5
+      n_epochs: 120
+      batch_size: 256
+      learning_rate: 1e-5
+      warmup_epochs: 3
+      n_samples: 10000
+      mse_weight: 0.01
       val_split: 0.1
-      n_samples: 100000
+      patience: 5
+      seed: 42
+      eta_min_factor: 0.1
+      max_grad_norm: 1.0
