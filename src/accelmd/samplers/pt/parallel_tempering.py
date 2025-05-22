@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from typing import Callable, Union
 
-from main.samplers.sampler import LangevinDynamics
+from src.accelmd.samplers.mcmc.langevin import LangevinDynamics
 
 
 class ParallelTempering(LangevinDynamics):

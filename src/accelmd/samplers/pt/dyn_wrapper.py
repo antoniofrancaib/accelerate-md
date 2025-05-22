@@ -1,4 +1,4 @@
-from main.sampler.sampler import MCMCSampler
+from src.accelmd.samplers.mcmc.base import MCMCSampler
 from typing import Optional
 
 
