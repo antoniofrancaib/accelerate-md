@@ -1,20 +1,20 @@
-name: "gmm_60dim_15mod_2rep_random"
+name: "gmm_3dim_8mod_4rep_random"
 device: "cuda"
 
 target:
   type: gmm
 gmm:
-  dim: 60
-  n_mixes: 15
+  dim: 3
+  n_mixes: 8
   loc_scaling: 5.0
   mode_arrangement: "random"
   grid_range: [-6.0, 6.0]
 
 pt:
-  temperatures: [1.00, 10.00]  # List of replica temperatures
+  temperatures: [1.00, 5.00, 10.00, 20.00]  # List of replica temperatures
   temp_low: 1.0
-  temp_high: 10.0
-  total_n_temp: 2
+  temp_high: 20.0
+  total_n_temp: 4
   temp_schedule: "geom"
   num_steps: 100000
   swap_interval: 1000
@@ -24,8 +24,8 @@ model_type: realnvp
 trainer:
   realnvp:
     model:
-      hidden_dim: 1024
-      n_couplings: 100
+      hidden_dim: 512
+      n_couplings: 30
       use_permutation: true
     training:
       n_epochs: 120
