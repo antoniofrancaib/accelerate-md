@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp_cart_2rep" 
+name: "aldp_cart_2rep_150coup_1024hidden" 
 device: "cuda"         # or "cpu"
 
 # ─────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ trainer:
   realnvp:
     model:
       hidden_dim: 1024
-      n_couplings: 100
+      n_couplings: 150
       use_permutation: true
     training:
       n_epochs: 120
