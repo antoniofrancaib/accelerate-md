@@ -228,7 +228,7 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
                          dimensionality of the configuration space.
         """
         # Actual implementation handled by potential subclasses
-        if hasattr(self, 'data'):
+        if hasattr(self, 'data') and self.data is not None:
             # If this class has data (AldpPotential or AldpPotentialCart)
             if isinstance(shape, int):
                 indices = torch.randint(0, self.data.shape[0], (shape,), device=self.data.device)
@@ -239,14 +239,54 @@ class AldpBoltzmann(nn.Module, TargetDistribution):
             return self.data[indices].to(self.data.device).float()
         else:
             # Default implementation for base class - abstract to subclasses
-            raise NotImplementedError("This method should be implemented by a subclass")
+            # or if data is not loaded (e.g. base AldpBoltzmann before child init)
+            raise NotImplementedError(
+                "Sample method requires self.data to be populated or be implemented by a subclass that handles sampling differently."
+            )
 
-    def tempered_version(self, temperature=1.0, scaling_method='sqrt'):
-        """Return a simple proxy (no variance scaling) for higher temperatures.
-        This is a placeholder to ensure compatibility with code expecting
-        `.tempered_version`. For rigorous physics, implement proper scaling.
+    def tempered_version(self, temperature_new, scaling_method=None):
         """
-        return self
+        Return a new instance of the target distribution at a different temperature.
+
+        Args:
+            temperature_new (float): The new temperature for the target distribution.
+            scaling_method (str, optional): Not used for Boltzmann scaling as temperature
+                                          directly defines the distribution. Defaults to None.
+
+        Returns:
+            A new instance of self.__class__ configured for temperature_new.
+        """
+        init_args = {
+            "data_path": self.data_path,
+            "temperature": temperature_new,  # Use the new temperature
+            "energy_cut": self.energy_cut,
+            "energy_max": self.energy_max,
+            "n_threads": self.n_threads,
+            "transform": self.transform_type, # self.transform_type was set from 'transform' arg in __init__
+            "ind_circ_dih": self.ind_circ_dih,
+            "shift_dih": self.shift_dih,
+            "shift_dih_params": self.shift_dih_params,
+            "default_std": self.default_std,
+            "env": self.env,
+        }
+        
+        current_device = None
+        if hasattr(self, 'device'): # For subclasses like AldpPotentialCart
+            init_args["device"] = self.device
+            current_device = self.device
+        elif isinstance(self.p.log_prob_fn.device, torch.device): # For boltzgen distributions
+             current_device = self.p.log_prob_fn.device
+        
+        # Create a new instance of the same class as self.
+        # This ensures that if self is AldpPotentialCart, a new AldpPotentialCart is made,
+        # and its __init__ will handle device placement and other specifics.
+        new_target = self.__class__(**init_args)
+        
+        # Ensure the new target is on the correct device if it's an nn.Module and device is known
+        if current_device is not None and isinstance(new_target, torch.nn.Module):
+            new_target.to(current_device)
+            
+        return new_target
 
 
 

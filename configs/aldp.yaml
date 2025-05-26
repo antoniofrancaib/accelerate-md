@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp_cart"
+name: "aldp_cart_2rep" 
 device: "cuda"         # or "cpu"
 
 # ─────────────────────────────────────────────────────────────
@@ -30,9 +30,9 @@ system:
 # Parallel‐Tempering settings
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 5.0]
+  temperatures: [1.0, 10.0]
   temp_low:      1.0
-  temp_high:     20.0
+  temp_high:     10.0
   total_n_temp:  2
   temp_schedule: geom
 
@@ -58,7 +58,7 @@ trainer:
   realnvp:
     model:
       hidden_dim: 1024
-      n_couplings: 80
+      n_couplings: 100
       use_permutation: true
     training:
       n_epochs: 120

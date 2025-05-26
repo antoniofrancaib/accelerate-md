@@ -151,11 +151,35 @@ def _evaluate(cfg: Dict[str, Any]):
     swap_rate.run(cfg)
     _LOG.info("Swap-rate evaluation completed")
 
-    # -- 2) metrics (two extra PNGs) ----------------------------------------
-    _LOG.info("Running metrics")
+    # -- 2) legacy metrics (two extra PNGs) ---------------------------------
+    _LOG.info("Running legacy metrics")
     acceptance_autocorrelation.run(cfg)
     moving_average_acceptance.run(cfg)
-    _LOG.info("Metrics calculation completed")
+    _LOG.info("Legacy metrics calculation completed")
+
+    # -- 3) enhanced sampling metrics (vanilla vs flow comparison) ----------
+    _LOG.info("Running enhanced sampling evaluation metrics")
+    try:
+        # Import metrics modules
+        from src.accelmd.metrics import integrated_autocorr_time
+        from src.accelmd.metrics import effective_sample_size  
+        from src.accelmd.metrics import round_trip_time
+        
+        # Run enhanced sampling metrics
+        _LOG.info("Running integrated autocorrelation time analysis")
+        integrated_autocorr_time.run(cfg)
+        
+        _LOG.info("Running effective sample size analysis")
+        effective_sample_size.run(cfg)
+        
+        _LOG.info("Running round-trip time and exploration analysis")
+        round_trip_time.run(cfg)
+        
+        _LOG.info("Enhanced sampling metrics completed successfully")
+        
+    except Exception as e:
+        _LOG.warning("Enhanced sampling metrics failed: %s", str(e))
+        _LOG.warning("Continuing with basic evaluation...")
 
     # Metrics are now stored directly at the expected location via template
     _LOG.info("Metrics calculated → %s", cfg["output"]["metric_json"])

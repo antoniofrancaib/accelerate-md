@@ -18,6 +18,9 @@ from importlib import import_module
 _modules = [
     "moving_average_acceptance",
     "acceptance_autocorrelation",
+    "integrated_autocorr_time",
+    "effective_sample_size",
+    "round_trip_time",
 ]
 for _m in _modules:
     try:
