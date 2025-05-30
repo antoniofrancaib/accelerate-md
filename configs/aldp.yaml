@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp_cart_2rep_150coup_1024hidden" 
+name: "aldp_cart_3rep_50coup_1024hidden" 
 device: "cuda"         # or "cpu"
 
 # ─────────────────────────────────────────────────────────────
@@ -30,12 +30,7 @@ system:
 # Parallel‐Tempering settings
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 10.0]
-  temp_low:      1.0
-  temp_high:     10.0
-  total_n_temp:  2
-  temp_schedule: geom
-
+  temperatures: [1.0, 10.0, 50.0]
   num_chains:    32
   num_steps:     200000
   swap_interval: 500
@@ -49,20 +44,6 @@ evaluation:
   num_samples_to_plot: 1000000
   num_samples_for_eval:   10000
 
-  # +++ Added: New parameters for Exploration Metrics +++
-  num_samples_for_exploration_metric: 10000 # Number of samples for generating trajectories for this metric
-  naive_exploration_autocorr_factor: 0.95  # Autocorrelation factor for the synthetic naive trajectory (0.0 to 1.0)
-  
-  # Settings for custom ALDP state definitions for exploration metrics
-  exploration_use_custom_aldp_states: True # Set to False to force K-Means for ALDP state definition
-  exploration_aldp_custom_n_states: 16     # Desired number of custom ALDP states (if using custom)
-  exploration_aldp_custom_centers_id: "default_16_aldp_states" # An identifier for your set of custom states (e.g., filename without .npy)
-  exploration_aldp_custom_centers_file: "configs/aldp_custom_states_16.npy" # Path to the .npy file with custom state definitions (shape: [N, 66])
-  
-  # Settings for K-Means state definition (used if not ALDP, or if custom ALDP fails/is disabled)
-  exploration_kmeans_n_states_max: 8       # Max states for K-Means if it's used
-  # +++ End Added +++
-
 # ─────────────────────────────────────────────────────────────
 # Flow backend & hyperparameters
 # ─────────────────────────────────────────────────────────────
@@ -72,7 +53,7 @@ trainer:
   realnvp:
     model:
       hidden_dim: 1024
-      n_couplings: 150
+      n_couplings: 50
       use_permutation: true
     training:
       n_epochs: 120
@@ -86,3 +67,20 @@ trainer:
       seed: 42
       eta_min_factor: 0.1
       max_grad_norm: 1.0
+
+# ─────────────────────────────────────────────────────────────
+# Kernel choices (NEW: pluggable kernel interfaces)
+# ─────────────────────────────────────────────────────────────
+local_kernel:
+  type: "langevin"  # Options: "langevin"
+  step_size: ${pt.step_size}
+  mh: true
+  device: ${device}
+
+swap_kernel:
+  type: "realnvp"  # Options: "vanilla", "realnvp", "tarflow"
+  # Flow-based swap kernel configuration
+  flow_checkpoint: "outputs/${name}/models/flow_${pt.temp_low:.2f}_${pt.temp_high:.2f}.pt"
+  device: ${device}
+  # Fallback to vanilla if flow not available
+  fallback_to_vanilla: true

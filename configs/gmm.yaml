@@ -12,10 +12,6 @@ gmm:
 
 pt:
   temperatures: [1.00, 5.00, 10.00, 20.00]  # List of replica temperatures
-  temp_low: 1.0
-  temp_high: 20.0
-  total_n_temp: 4
-  temp_schedule: "geom"
   num_steps: 100000
   swap_interval: 1000
 

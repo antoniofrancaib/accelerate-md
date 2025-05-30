@@ -22,7 +22,7 @@ import torch
 import yaml
 
 # ---- project imports --------------------------------------------------------
-from src.accelmd.utils.config import load_config
+from src.accelmd.utils.config import load_config, build_local_kernel, build_swap_kernel
 from src.accelmd.models import MODEL_REGISTRY
 from src.accelmd.trainers.realnvp import train_realnvp  # keep for registry
 from src.accelmd.trainers.tarflow import train_tarflow  # new backend
@@ -146,6 +146,21 @@ def _evaluate(cfg: Dict[str, Any]):
     """Run swap-rate + metrics and produce outputs."""
     _LOG.info("Starting evaluation phase")
     
+    # Build kernels for the evaluation phase
+    _LOG.info("Building kernel interfaces...")
+    local_kernel = build_local_kernel(cfg)
+    swap_kernel = build_swap_kernel(cfg)
+    
+    if local_kernel and swap_kernel:
+        _LOG.info("Using new kernel interfaces for evaluation")
+        # Store kernels in config for evaluators to use
+        cfg["_kernels"] = {
+            "local": local_kernel,
+            "swap": swap_kernel
+        }
+    else:
+        _LOG.info("Using legacy evaluation path (no kernel interfaces)")
+    
     # -- 1) swap-rate (produces JSON summary) -------------------------------
     _LOG.info("Running swap-rate evaluation")
     swap_rate.run(cfg)
@@ -226,6 +241,8 @@ def main() -> None:
                    help="Do both training and evaluation")
     p.add_argument("--cpu", action="store_true",
                    help="Force CPU usage even if GPU is available")
+    p.add_argument("--use-legacy-kernels", action="store_true",
+                   help="Force use of legacy kernel implementation")
     args = p.parse_args()
 
     if not (args.train or args.evaluate or args.run_all):
@@ -235,9 +252,15 @@ def main() -> None:
     _LOG.info("Loading config from %s", args.config)
     cfg = load_config(args.config)
     
+    # Override kernel usage if requested
+    if args.use_legacy_kernels:
+        _LOG.info("Legacy kernel mode forced by command line argument")
+        cfg.pop("local_kernel", None)
+        cfg.pop("swap_kernel", None)
+    
     # ─── START experiment dir & logging setup ───
     name = cfg.get("name") or Path(args.config).stem
-    # derive_output_paths already put <outputs>/<name> in base_dir
+    # derive_output_paths already put <outputs>/<n> in base_dir
     exp_dir = Path(cfg["output"]["base_dir"])
 
     # Standard sub-directories (models ≡ checkpoints, metrics ≡ results)

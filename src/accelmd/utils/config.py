@@ -5,6 +5,190 @@ Configuration utilities for loading and merging YAML configuration files.
 import yaml
 from pathlib import Path
 import logging
+import re
+from typing import Dict, Any, Optional
+
+from src.accelmd.kernels.local.langevin import Langevin
+from src.accelmd.kernels.swap.vanilla import VanillaSwap
+from src.accelmd.kernels.swap.realnvp import RealNVPSwap
+from src.accelmd.kernels.swap.tarflow import TarFlowSwap
+
+
+def _substitute_variables(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively substitute ${variable} patterns in config values.
+    
+    Args:
+        config: Configuration dictionary to process
+        context: Context variables for substitution
+        
+    Returns:
+        Configuration with substituted values
+    """
+    def substitute_value(value):
+        if isinstance(value, str):
+            # Find all ${var} or ${var.subkey} or ${var:format} patterns
+            pattern = r'\$\{([^}]+)\}'
+            matches = re.findall(pattern, value)
+            
+            for match in matches:
+                # Handle format specifications like pt.temp_low:.2f
+                if ':' in match:
+                    var_path, format_spec = match.split(':', 1)
+                else:
+                    var_path = match
+                    format_spec = None
+                
+                # Handle nested keys like pt.step_size
+                keys = var_path.split('.')
+                replacement = context
+                try:
+                    for key in keys:
+                        replacement = replacement[key]
+                    
+                    # Apply format specification if present
+                    if format_spec:
+                        if isinstance(replacement, (int, float)):
+                            replacement = f"{replacement:{format_spec}}"
+                        else:
+                            replacement = str(replacement)
+                    else:
+                        replacement = str(replacement)
+                    
+                    value = value.replace(f'${{{match}}}', replacement)
+                except (KeyError, TypeError, ValueError):
+                    # Variable not found or format error, leave as is
+                    pass
+            return value
+        elif isinstance(value, dict):
+            return {k: substitute_value(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [substitute_value(item) for item in value]
+        else:
+            return value
+    
+    return substitute_value(config)
+
+
+def build_local_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
+    """Build a LocalKernel from configuration.
+    
+    Args:
+        cfg: Full configuration dictionary
+        
+    Returns:
+        LocalKernel instance or None if not configured
+    """
+    kernel_cfg = cfg.get("local_kernel")
+    if not kernel_cfg:
+        return None
+    
+    # Re-apply variable substitution with current config values
+    # This ensures consistency across temperature pairs
+    kernel_cfg = _substitute_variables(kernel_cfg, cfg)
+        
+    kernel_type = kernel_cfg.get("type", "").lower()
+    
+    if kernel_type == "langevin":
+        return Langevin(
+            step_size=float(kernel_cfg.get("step_size", 1e-4)),
+            mh=bool(kernel_cfg.get("mh", True)),
+            device=str(kernel_cfg.get("device", "cpu"))
+        )
+    else:
+        logging.getLogger(__name__).warning(f"Unknown local kernel type: {kernel_type}")
+        return None
+
+
+def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
+    """Build a SwapKernel from configuration.
+    
+    Args:
+        cfg: Full configuration dictionary
+        
+    Returns:
+        SwapKernel instance or None if not configured
+    """
+    kernel_cfg = cfg.get("swap_kernel")
+    if not kernel_cfg:
+        return None
+    
+    # Re-apply variable substitution with current config values
+    # This is crucial for handling multiple temperature pairs correctly
+    kernel_cfg = _substitute_variables(kernel_cfg, cfg)
+        
+    kernel_type = kernel_cfg.get("type", "").lower()
+    device = str(kernel_cfg.get("device", "cpu"))
+    
+    if kernel_type == "vanilla":
+        return VanillaSwap()
+    
+    elif kernel_type == "realnvp":
+        flow_checkpoint = kernel_cfg.get("flow_checkpoint")
+        if not flow_checkpoint:
+            logging.getLogger(__name__).warning("RealNVP swap kernel requires flow_checkpoint")
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
+                return VanillaSwap()
+            return None
+            
+        checkpoint_path = Path(flow_checkpoint)
+        if not checkpoint_path.exists():
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).warning(
+                    f"Flow checkpoint not found: {checkpoint_path}. Falling back to vanilla swap."
+                )
+                return VanillaSwap()
+            else:
+                logging.getLogger(__name__).warning(f"Flow checkpoint not found: {checkpoint_path}")
+                return None
+        
+        try:
+            return RealNVPSwap(
+                flow_checkpoint=checkpoint_path,
+                device=device
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to load RealNVP swap kernel: {e}")
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
+                return VanillaSwap()
+            return None
+    
+    elif kernel_type == "tarflow":
+        flow_checkpoint = kernel_cfg.get("flow_checkpoint")
+        if not flow_checkpoint:
+            logging.getLogger(__name__).warning("TarFlow swap kernel requires flow_checkpoint")
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
+                return VanillaSwap()
+            return None
+            
+        checkpoint_path = Path(flow_checkpoint)
+        if not checkpoint_path.exists():
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).warning(
+                    f"Flow checkpoint not found: {checkpoint_path}. Falling back to vanilla swap."
+                )
+                return VanillaSwap()
+            else:
+                logging.getLogger(__name__).warning(f"Flow checkpoint not found: {checkpoint_path}")
+                return None
+        
+        try:
+            return TarFlowSwap(
+                flow_checkpoint=checkpoint_path,
+                device=device
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to load TarFlow swap kernel: {e}")
+            if kernel_cfg.get("fallback_to_vanilla", False):
+                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
+                return VanillaSwap()
+            return None
+    
+    else:
+        logging.getLogger(__name__).warning(f"Unknown swap kernel type: {kernel_type}")
+        return None
 
 
 def load_config(config_path: str) -> dict:
@@ -33,8 +217,19 @@ def load_config(config_path: str) -> dict:
         "metric_template", "swap_rate_flow_${t_low}_to_${t_high}.json"
     )
 
-    # 4) compute metric_json from template
-    t_low, t_high = float(cfg["pt"]["temp_low"]), float(cfg["pt"]["temp_high"])
+    # 4) Initialize temp_low and temp_high for backward compatibility
+    # These will be updated by main.py for each temperature pair
+    pt_cfg = cfg.get("pt", {})
+    temps = pt_cfg.get("temperatures", [1.0, 10.0])
+    if len(temps) < 2:
+        raise ValueError("pt.temperatures must contain at least 2 temperature values")
+    
+    # Set initial values from first and last temperatures for compatibility
+    cfg["pt"]["temp_low"] = float(temps[0])
+    cfg["pt"]["temp_high"] = float(temps[-1])
+    
+    # Compute initial metric_json from template
+    t_low, t_high = cfg["pt"]["temp_low"], cfg["pt"]["temp_high"]
     filename = (
         cfg["output"]["metric_template"]
         .replace("${t_low}",  f"{t_low:.2f}")
@@ -44,21 +239,23 @@ def load_config(config_path: str) -> dict:
         Path(cfg["output"]["results_dir"]) / filename
     )
 
-    # ─── START multi‐temp loader ─────────────
-    pt_cfg = cfg.get("pt", {})
-    temps = pt_cfg.get("temperatures", None)
-    if temps is None:
-        low = pt_cfg.get("temp_low")
-        high = pt_cfg.get("temp_high")
-        temps = [low, high]
-    else:
-        if "temp_low" in pt_cfg or "temp_high" in pt_cfg:
-            logging.getLogger(__name__).warning(
-                "Both pt.temperatures list and temp_low/temp_high provided; using pt.temperatures."
-            )
-    temps = sorted([float(t) for t in temps])
-    cfg["pt"]["temperatures"] = temps
-    # ─── END multi‐temp loader ───────────────
+    # 5) Ensure temperatures are sorted and stored as list
+    cfg["pt"]["temperatures"] = sorted([float(t) for t in temps])
+    
+    # 6) Variable substitution for non-kernel configs
+    # NOTE: Kernel configs are intentionally NOT substituted here to allow
+    # for proper handling of multiple temperature pairs in main.py
+    kernel_configs = {}
+    if "local_kernel" in cfg:
+        kernel_configs["local_kernel"] = cfg.pop("local_kernel")
+    if "swap_kernel" in cfg:
+        kernel_configs["swap_kernel"] = cfg.pop("swap_kernel")
+    
+    # Apply substitution to the rest of the config
+    cfg = _substitute_variables(cfg, cfg)
+    
+    # Restore kernel configs without substitution
+    cfg.update(kernel_configs)
 
     return cfg
 
@@ -88,29 +285,20 @@ def merge_dicts(base: dict, other: dict):
 
 def derive_output_paths(cfg: dict) -> dict:
     """
-    Expand ${name}, ${t_low}, ${t_high} tokens and attach
-    a complete 'output' block under outputs/<name>/…
+    Expand ${name} tokens and attach a complete 'output' block under outputs/<n>/…
+    
+    Note: Temperature-specific paths will be set later by main.py for each pair.
     """
-    name    = cfg["name"]
-    pt_cfg  = cfg["pt"]
-    base    = Path(cfg.get("output", {}).get("base_dir", "outputs")) / name
+    name = cfg["name"]
+    base = Path(cfg.get("output", {}).get("base_dir", "outputs")) / name
     
-    # Format temperatures for filenames
-    t_low = float(pt_cfg["temp_low"])
-    t_high = float(pt_cfg["temp_high"])
-    
-    # Use the same naming pattern as in the trainer
-    model_type = cfg.get("model_type", "realnvp")
-    prefix = "flow" if model_type == "realnvp" else "tarflow"
-    model_filename = f"{prefix}_{t_low:.2f}_to_{t_high:.2f}.pt"
-
+    # Basic paths without temperature-specific information
     paths = {
         "base_dir":    str(base),
         "checkpoints": str(base/"checkpoints"),
         "plots_dir":   str(base/"plots"),
         "results_dir": str(base/"results"),
         "log_file":    str(base/"experiment.log"),
-        "model_path":  str(base/"checkpoints"/model_filename),
         "config_copy": str(base/"config.yaml"),
     }
 

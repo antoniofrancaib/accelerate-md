@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import pdb
 
-from main.sampler.sampler import ParallelTempering
+from src.accelmd.samplers.pt.parallel_tempering import ParallelTempering
 from main.sampler.dyn_mcmc_warp import DynSamplerWrapper
 
 
