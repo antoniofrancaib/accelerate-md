@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp_cart_3rep_50coup_1024hidden" 
+name: "aldp_cart_4rep_150coup_512hidden" 
 device: "cuda"         # or "cpu"
 
 # ─────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ system:
 # Parallel‐Tempering settings
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 10.0, 50.0]
+  temperatures: [1.0, 10.0, 50.0, 100.0]
   num_chains:    32
   num_steps:     200000
   swap_interval: 500
@@ -52,8 +52,8 @@ model_type: realnvp
 trainer:
   realnvp:
     model:
-      hidden_dim: 1024
-      n_couplings: 50
+      hidden_dim: 512
+      n_couplings: 150
       use_permutation: true
     training:
       n_epochs: 120

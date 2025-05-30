@@ -53,13 +53,8 @@ class RealNVPSwap(SwapKernel):
         
         # Extract model config if not provided
         if self.model_config is None:
-            # Try to infer from checkpoint or use defaults
-            self.model_config = {
-                "n_couplings": 14,
-                "hidden_dim": 256,
-                "use_permutation": True,
-                "dim": 2,  # Will be overridden when we know the actual dimension
-            }
+            # Infer from checkpoint state dict
+            self.model_config = self._infer_model_config(state_dict)
         
         # Create model
         self.flow = MODEL_REGISTRY["realnvp"](self.model_config).to(self.device)
@@ -67,6 +62,44 @@ class RealNVPSwap(SwapKernel):
         # Load state dict
         self.flow.load_state_dict(state_dict)
         self.flow.eval()
+    
+    def _infer_model_config(self, state_dict: dict) -> dict:
+        """Infer model configuration from checkpoint state dict.
+        
+        Args:
+            state_dict: Model state dictionary
+            
+        Returns:
+            Inferred model configuration
+        """
+        # Find the highest coupling layer index to determine n_couplings
+        max_coupling_idx = -1
+        for key in state_dict.keys():
+            if key.startswith("couplings.") and ".mask" in key:
+                coupling_idx = int(key.split(".")[1])
+                max_coupling_idx = max(max_coupling_idx, coupling_idx)
+        n_couplings = max_coupling_idx + 1
+        
+        # Infer dimension from mask size
+        mask_key = "couplings.0.mask"
+        if mask_key in state_dict:
+            dim = state_dict[mask_key].shape[0]
+        else:
+            raise ValueError("Cannot infer dimension: couplings.0.mask not found in checkpoint")
+        
+        # Infer hidden dimension from first layer weights
+        weight_key = "couplings.0.s_net.0.weight"
+        if weight_key in state_dict:
+            hidden_dim = state_dict[weight_key].shape[0]
+        else:
+            raise ValueError("Cannot infer hidden_dim: couplings.0.s_net.0.weight not found in checkpoint")
+        
+        return {
+            "dim": dim,
+            "n_couplings": n_couplings, 
+            "hidden_dim": hidden_dim,
+            "use_permutation": True,  # Default assumption
+        }
     
     def propose(
         self,

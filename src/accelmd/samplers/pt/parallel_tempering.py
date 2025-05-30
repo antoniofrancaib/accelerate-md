@@ -66,8 +66,8 @@ class ParallelTempering(LangevinDynamics):
             return self._sample_per_temp_new()
         else:
             # Fallback to legacy implementation
-            new_samples, acc = super(ParallelTempering, self).sample()
-            return new_samples, acc
+        new_samples, acc = super(ParallelTempering, self).sample()
+        return new_samples, acc
     
     def _sample_per_temp_new(self):
         """Sample using new LocalKernel interface."""
@@ -95,7 +95,7 @@ class ParallelTempering(LangevinDynamics):
                 accept_prob = torch.clamp(torch.exp(log_alpha), 0, 1)
                 is_accept = torch.rand_like(accept_prob) < accept_prob
                 is_accept = is_accept.unsqueeze(-1)
-                
+
                 # Update configurations
                 self.x[temp_idx] = torch.where(is_accept, x_new, x_temp)
                 all_acc_rates.append(accept_prob.mean().item())

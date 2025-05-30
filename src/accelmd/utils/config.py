@@ -89,8 +89,13 @@ def build_local_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
     kernel_type = kernel_cfg.get("type", "").lower()
     
     if kernel_type == "langevin":
+        # Convert string values to proper types
+        step_size = kernel_cfg.get("step_size", 1e-4)
+        if isinstance(step_size, str):
+            step_size = float(step_size)
+            
         return Langevin(
-            step_size=float(kernel_cfg.get("step_size", 1e-4)),
+            step_size=step_size,
             mh=bool(kernel_cfg.get("mh", True)),
             device=str(kernel_cfg.get("device", "cpu"))
         )
@@ -142,9 +147,38 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
                 logging.getLogger(__name__).warning(f"Flow checkpoint not found: {checkpoint_path}")
                 return None
         
+        # Extract model config from training configuration for consistency
+        model_config = None
+        trainer_cfg = cfg.get("trainer", {}).get("realnvp", {}).get("model", {})
+        if trainer_cfg:
+            # Get target to determine dimension
+            target_cfg = cfg.get("target", {})
+            target_type = target_cfg.get("type", "")
+            
+            # Determine dimension based on target type
+            if target_type == "aldp":
+                # ALDP uses 66-dimensional cartesian coordinates
+                dim = 66
+            elif target_type == "gmm":
+                # GMM uses the configured dimension
+                gmm_cfg = cfg.get("gmm", {})
+                dim = gmm_cfg.get("dim", 2)
+            else:
+                # Use default or let the checkpoint inference handle it
+                dim = None
+            
+            if dim is not None:
+                model_config = {
+                    "dim": dim,
+                    "hidden_dim": trainer_cfg.get("hidden_dim", 256),
+                    "n_couplings": trainer_cfg.get("n_couplings", 14),
+                    "use_permutation": trainer_cfg.get("use_permutation", True),
+                }
+        
         try:
             return RealNVPSwap(
                 flow_checkpoint=checkpoint_path,
+                model_config=model_config,
                 device=device
             )
         except Exception as e:
@@ -242,20 +276,16 @@ def load_config(config_path: str) -> dict:
     # 5) Ensure temperatures are sorted and stored as list
     cfg["pt"]["temperatures"] = sorted([float(t) for t in temps])
     
-    # 6) Variable substitution for non-kernel configs
-    # NOTE: Kernel configs are intentionally NOT substituted here to allow
-    # for proper handling of multiple temperature pairs in main.py
-    kernel_configs = {}
-    if "local_kernel" in cfg:
-        kernel_configs["local_kernel"] = cfg.pop("local_kernel")
-    if "swap_kernel" in cfg:
-        kernel_configs["swap_kernel"] = cfg.pop("swap_kernel")
-    
-    # Apply substitution to the rest of the config
+    # 6) Variable substitution for configs
+    # First apply substitution to the main config
     cfg = _substitute_variables(cfg, cfg)
     
-    # Restore kernel configs without substitution
-    cfg.update(kernel_configs)
+    # Then apply basic variable substitution to kernel configs
+    # (temperature-dependent variables will be handled later in main.py)
+    if "local_kernel" in cfg:
+        cfg["local_kernel"] = _substitute_variables(cfg["local_kernel"], cfg)
+    if "swap_kernel" in cfg:
+        cfg["swap_kernel"] = _substitute_variables(cfg["swap_kernel"], cfg)
 
     return cfg
 
