@@ -248,10 +248,6 @@ def main() -> None:
     _LOG.info("Loading config from %s", args.config)
     cfg = load_config(args.config)
     
-    # Save the original config content before any modifications
-    with open(args.config, "r") as f:
-        original_config_content = f.read()
-    
     # Override kernel usage if requested
     if args.use_legacy_kernels:
         _LOG.info("Legacy kernel mode forced by command line argument")
@@ -351,11 +347,6 @@ def main() -> None:
             if args.evaluate:
                 _LOG.info("=== Pair %s: Evaluation-only ===", suffix)
                 _evaluate(cfg)
-    
-    # Save the original configuration that was used as input
-    with open(exp_dir / "config_used.yaml", "w", encoding="utf-8") as fp:
-        fp.write(original_config_content)
-    _LOG.info("Original config snapshot saved to config_used.yaml")
     
     _LOG.info("Experiment completed successfully")
 
