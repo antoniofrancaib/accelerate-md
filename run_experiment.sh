@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ####### SBATCH directives begin here ###############################
-#SBATCH -J gmm_experiment              # Job name
+#SBATCH -J unified_experiment          # Job name
 #SBATCH -A MLMI-jaf98-SL2-GPU          # GPU job account
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -9,8 +9,8 @@
 #SBATCH --gres=gpu:1                   # Request 1 GPU
 #SBATCH --time=6:00:00                 # Walltime - 6 hours (training + evaluation)
 #SBATCH --mail-type=NONE
-#SBATCH --output=logs/gmm_experiment_%j.out
-#SBATCH --error=logs/gmm_experiment_%j.err
+#SBATCH --output=logs/unified_experiment_%j.out
+#SBATCH --error=logs/unified_experiment_%j.err
 #SBATCH -p ampere                      # GPU partition name on CSD3
 ####### SBATCH directives end here ###############################
 
@@ -36,19 +36,18 @@ mkdir -p logs
 # Add current directory to PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-# Configuration file (point to your YAML in configs/pt)
-CONFIG="${CONFIG:-configs/aldp.yaml}"
+# Configuration file - now defaults to unified config
+# Can still override with: CONFIG=configs/aldp.yaml sbatch run_experiment.sh
+CONFIG="${CONFIG:-configs/experiment.yaml}"
 
 # Display GPU info
 nvidia-smi
 
 # Run the full pipeline (train + evaluate)
-# ———> note we drop --experiment-name since main.py doesn't accept it
-# ———> model will be saved to outputs/${name}/model.pt and used by the evaluator
 CMD="stdbuf -oL python -u main.py --run-all --config $CONFIG"
 
 echo "============================================="
-echo "Starting AccelMD GMM experiment"
+echo "Starting AccelMD Unified Experiment"
 echo "Config: $CONFIG"
 echo "============================================="
 echo "Executing:"
@@ -61,7 +60,24 @@ eval $CMD
 OUTPUT_DIR=$(python - <<PY
 import yaml
 cfg = yaml.safe_load(open("$CONFIG"))
-name = cfg.get("name", "default")
+
+# Handle unified config format
+if "experiment_type" in cfg:
+    # Unified config - determine name based on experiment type
+    exp_type = cfg["experiment_type"]
+    name = cfg.get("name", "unified_experiment_auto")
+    if name == "unified_experiment_auto":
+        # Auto-generate name (simplified version for output detection)
+        if exp_type == "aldp":
+            name = "aldp_cart_experiment"  
+        elif exp_type == "gmm":
+            name = "gmm_experiment"
+        else:
+            name = f"{exp_type}_experiment"
+else:
+    # Legacy config format
+    name = cfg.get("name", "default")
+
 base = cfg.get("output",{}).get("base_dir","outputs")
 print(f"{base}/{name}")
 PY

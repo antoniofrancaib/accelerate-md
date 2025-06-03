@@ -1,51 +1,28 @@
 # ─────────────────────────────────────────────────────────────
+# UNIFIED EXPERIMENT CONFIGURATION
+# ─────────────────────────────────────────────────────────────
+# Choose experiment type: "aldp" or "gmm"
+experiment_type: "aldp"  # Change this to switch between experiments
+
+# ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
-name: "aldp_cart_4rep_150coup_512hidden" 
-device: "cuda"         # or "cpu"
+name: "unified_experiment_auto"  # Will be auto-generated based on experiment_type
+device: "cuda"  # or "cpu"
 
 # ─────────────────────────────────────────────────────────────
-# Which target distribution we'll sample from
-# ─────────────────────────────────────────────────────────────
-target:
-  type: aldp
-  data_path: "./datasets/aldp/position_min_energy.pt"
-  transform: cartesian
-  env: implicit
-
-# ─────────────────────────────────────────────────────────────
-# Molecular system definition
-# ─────────────────────────────────────────────────────────────
-system:
-  temperature: 300           # Kelvin
-  energy_cut: 1.e8
-  energy_max: 1.e20
-  n_threads: 64
-  transform: cartesian
-  shift_dih: false
-  env: implicit
-  data:
-    transform_path: "./datasets/aldp/position_min_energy.pt"
-# ─────────────────────────────────────────────────────────────
-# Parallel‐Tempering settings
+# Parallel Tempering Settings (shared)
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 10.0, 50.0, 100.0]
-  num_chains:    32
-  num_steps:     200000
+  temperatures: [1.0, 1.5, 2.0]
+  num_chains: 32
+  num_steps: 200000
   swap_interval: 500
   check_interval: 10000
-  step_size:     1e-4
+  step_size: 1e-4
 
 # ─────────────────────────────────────────────────────────────
-# Evaluation settings
-# ─────────────────────────────────────────────────────────────
-evaluation:
-  num_samples_to_plot: 1000000
-  num_samples_for_eval:   10000
-
-# ─────────────────────────────────────────────────────────────
-# Flow backend & hyperparameters
+# Flow backend & hyperparameters (shared)
 # ─────────────────────────────────────────────────────────────
 model_type: realnvp
 
@@ -69,18 +46,54 @@ trainer:
       max_grad_norm: 1.0
 
 # ─────────────────────────────────────────────────────────────
-# Kernel choices (NEW: pluggable kernel interfaces)
+# TARGET-SPECIFIC CONFIGURATIONS
 # ─────────────────────────────────────────────────────────────
+
+# ALDP-specific settings
+aldp:
+  target:
+    data_path: "./datasets/aldp/position_min_energy.pt"
+    transform: cartesian
+    env: implicit
+  
+  system:
+    temperature: 300           # Kelvin
+    energy_cut: 1.e8
+    energy_max: 1.e20
+    n_threads: 64
+    transform: cartesian
+    shift_dih: false
+    env: implicit
+    data:
+      transform_path: "./datasets/aldp/position_min_energy.pt"
+
+# GMM-specific settings
+gmm:
+  gmm_params:
+    dim: 3
+    n_mixes: 8
+    loc_scaling: 5.0
+    mode_arrangement: "random"
+    grid_range: [-6.0, 6.0]
+
+# ─────────────────────────────────────────────────────────────
+# SHARED CONFIGURATIONS
+# ─────────────────────────────────────────────────────────────
+
+# Evaluation settings
+evaluation:
+  num_samples_to_plot: 1000000
+  num_samples_for_eval: 10000
+
+# Kernel choices
 local_kernel:
-  type: "langevin"  # Options: "langevin"
-  step_size: ${pt.step_size}
+  type: "langevin"
+  step_size: null  # Will be set from pt.step_size
   mh: true
-  device: ${device}
+  device: null     # Will be set from device
 
 swap_kernel:
-  type: "realnvp"  # Options: "vanilla", "realnvp", "tarflow"
-  # Flow-based swap kernel configuration
-  flow_checkpoint: "outputs/${name}/models/flow_${pt.temp_low:.2f}_${pt.temp_high:.2f}.pt"
-  device: ${device}
-  # Fallback to vanilla if flow not available
-  fallback_to_vanilla: true
+  type: "realnvp"
+  flow_checkpoint: null  # Will be auto-generated
+  device: null           # Will be set from device
+  fallback_to_vanilla: true 

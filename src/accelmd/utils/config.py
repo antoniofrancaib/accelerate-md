@@ -1,5 +1,6 @@
 """
 Configuration utilities for loading and merging YAML configuration files.
+Supports only the unified configuration format.
 """
 
 import yaml
@@ -69,6 +70,30 @@ def _substitute_variables(config: Dict[str, Any], context: Dict[str, Any]) -> Di
     return substitute_value(config)
 
 
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    """
+    Recursively merge override into base and return a new dictionary.
+    
+    Args:
+        base: Base dictionary
+        override: Override dictionary to merge
+        
+    Returns:
+        New merged dictionary
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def build_local_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
     """Build a LocalKernel from configuration.
     
@@ -83,7 +108,6 @@ def build_local_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
         return None
     
     # Re-apply variable substitution with current config values
-    # This ensures consistency across temperature pairs
     kernel_cfg = _substitute_variables(kernel_cfg, cfg)
         
     kernel_type = kernel_cfg.get("type", "").lower()
@@ -118,7 +142,6 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
         return None
     
     # Re-apply variable substitution with current config values
-    # This is crucial for handling multiple temperature pairs correctly
     kernel_cfg = _substitute_variables(kernel_cfg, cfg)
         
     kernel_type = kernel_cfg.get("type", "").lower()
@@ -161,7 +184,7 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
                 dim = 66
             elif target_type == "gmm":
                 # GMM uses the configured dimension
-                gmm_cfg = cfg.get("gmm", {})
+                gmm_cfg = cfg.get("gmm_params", {})
                 dim = gmm_cfg.get("dim", 2)
             else:
                 # Use default or let the checkpoint inference handle it
@@ -227,32 +250,34 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
 
 def load_config(config_path: str) -> dict:
     """
-    Load a single YAML config file and return the parsed dictionary.
+    Load the unified YAML config file and return the processed configuration.
     
     Args:
         config_path: Path to the YAML configuration file
         
     Returns:
-        Dictionary containing the parsed configuration
+        Dictionary containing the processed configuration
     """
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f) or {}
 
-    # 1) model_type default + validation
+    # Process unified configuration format
+    cfg = _process_unified_config(cfg)
+
+    # Validate model_type
     cfg.setdefault("model_type", "realnvp")
     if cfg["model_type"] not in ("realnvp", "tarflow"):
         raise ValueError(f"Unsupported model_type {cfg['model_type']}")
 
-    # 2) derive output paths
+    # Derive output paths
     cfg = derive_output_paths(cfg)
 
-    # 3) default metric template
+    # Default metric template
     cfg["output"].setdefault(
         "metric_template", "swap_rate_flow_${t_low}_to_${t_high}.json"
     )
 
-    # 4) Initialize temp_low and temp_high for backward compatibility
-    # These will be updated by main.py for each temperature pair
+    # Initialize temp_low and temp_high for processing
     pt_cfg = cfg.get("pt", {})
     temps = pt_cfg.get("temperatures", [1.0, 10.0])
     if len(temps) < 2:
@@ -273,15 +298,13 @@ def load_config(config_path: str) -> dict:
         Path(cfg["output"]["results_dir"]) / filename
     )
 
-    # 5) Ensure temperatures are sorted and stored as list
+    # Ensure temperatures are sorted and stored as list
     cfg["pt"]["temperatures"] = sorted([float(t) for t in temps])
     
-    # 6) Variable substitution for configs
-    # First apply substitution to the main config
+    # Variable substitution for configs
     cfg = _substitute_variables(cfg, cfg)
     
-    # Then apply basic variable substitution to kernel configs
-    # (temperature-dependent variables will be handled later in main.py)
+    # Apply variable substitution to kernel configs
     if "local_kernel" in cfg:
         cfg["local_kernel"] = _substitute_variables(cfg["local_kernel"], cfg)
     if "swap_kernel" in cfg:
@@ -290,34 +313,9 @@ def load_config(config_path: str) -> dict:
     return cfg
 
 
-def merge_dicts(base: dict, other: dict):
-    """
-    Recursively merge *other* into *base* (in-place) and return *base*.
-    
-    Args:
-        base: Base dictionary to merge into
-        other: Dictionary to merge from
-        
-    Returns:
-        The merged base dictionary
-    """
-    for key, value in other.items():
-        if (
-            key in base
-            and isinstance(base[key], dict)
-            and isinstance(value, dict)
-        ):
-            merge_dicts(base[key], value)
-        else:
-            base[key] = value
-    return base
-
-
 def derive_output_paths(cfg: dict) -> dict:
     """
     Expand ${name} tokens and attach a complete 'output' block under outputs/<n>/…
-    
-    Note: Temperature-specific paths will be set later by main.py for each pair.
     """
     name = cfg["name"]
     base = Path(cfg.get("output", {}).get("base_dir", "outputs")) / name
@@ -333,4 +331,104 @@ def derive_output_paths(cfg: dict) -> dict:
     }
 
     cfg["output"] = {**paths, **cfg.get("output", {})}
-    return cfg 
+    return cfg
+
+
+def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Process unified configuration format by selecting the appropriate experiment type.
+    
+    Args:
+        cfg: Configuration dictionary in unified format
+        
+    Returns:
+        Processed configuration in the standard format
+    """
+    # Validate experiment_type is present
+    experiment_type = cfg.get("experiment_type")
+    if not experiment_type:
+        raise ValueError("Missing 'experiment_type' field. Only unified configuration format is supported.")
+    
+    if experiment_type not in ("aldp", "gmm"):
+        raise ValueError(f"Invalid experiment_type: {experiment_type}. Must be 'aldp' or 'gmm'")
+    
+    # Extract the experiment-specific configuration
+    exp_config = cfg.get(experiment_type, {})
+    if not exp_config:
+        raise ValueError(f"No configuration found for experiment_type: {experiment_type}")
+    
+    # Start with base configuration (excluding experiment-specific sections)
+    processed_cfg = {
+        "device": cfg.get("device", "cuda"),
+        "model_type": cfg.get("model_type", "realnvp"),
+        "pt": cfg.get("pt", {}),
+        "trainer": cfg.get("trainer", {}),
+        "evaluation": cfg.get("evaluation", {}),
+        "local_kernel": cfg.get("local_kernel", {}),
+        "swap_kernel": cfg.get("swap_kernel", {}),
+    }
+    
+    # Auto-generate experiment name if needed
+    name = cfg.get("name", "unified_experiment_auto")
+    if name == "unified_experiment_auto":
+        # Generate a descriptive name based on experiment type and config
+        if experiment_type == "aldp":
+            trainer_cfg = processed_cfg.get("trainer", {}).get("realnvp", {})
+            model_cfg = trainer_cfg.get("model", {})
+            pt_cfg = processed_cfg.get("pt", {})
+            
+            temps = pt_cfg.get("temperatures", [300, 400, 500])
+            n_reps = len(temps)
+            n_couplings = model_cfg.get("n_couplings", 150)
+            hidden_dim = model_cfg.get("hidden_dim", 512)
+            
+            name = f"aldp_cart_{n_reps}rep_{n_couplings}coup_{hidden_dim}hidden"
+            
+        elif experiment_type == "gmm":
+            gmm_cfg = exp_config.get("gmm_params", {})
+            trainer_cfg = processed_cfg.get("trainer", {}).get("realnvp", {})
+            model_cfg = trainer_cfg.get("model", {})
+            pt_cfg = processed_cfg.get("pt", {})
+            
+            temps = pt_cfg.get("temperatures", [300, 400, 500])
+            dim = gmm_cfg.get("dim", 3)
+            n_mixes = gmm_cfg.get("n_mixes", 8)
+            n_reps = len(temps)
+            mode_arrangement = gmm_cfg.get("mode_arrangement", "random")
+            
+            name = f"gmm_{dim}dim_{n_mixes}mod_{n_reps}rep_{mode_arrangement}"
+    
+    processed_cfg["name"] = name
+    
+    # Merge experiment-specific configuration (overrides)
+    processed_cfg = _deep_merge_dicts(processed_cfg, exp_config)
+    
+    # Automatically set target.type based on experiment_type
+    if "target" not in processed_cfg:
+        processed_cfg["target"] = {}
+    processed_cfg["target"]["type"] = experiment_type
+    
+    # Handle GMM-specific transformations
+    if experiment_type == "gmm":
+        # Move gmm_params to gmm for compatibility with existing target code
+        if "gmm_params" in processed_cfg:
+            processed_cfg["gmm"] = processed_cfg.pop("gmm_params")
+    
+    # Set device references in kernel configs
+    if processed_cfg.get("local_kernel"):
+        processed_cfg["local_kernel"]["device"] = processed_cfg["device"]
+        # Set step_size from pt config if not explicitly set
+        if processed_cfg["local_kernel"].get("step_size") is None:
+            pt_cfg = processed_cfg.get("pt", {})
+            processed_cfg["local_kernel"]["step_size"] = pt_cfg.get("step_size", 1e-4)
+    
+    if processed_cfg.get("swap_kernel"):
+        processed_cfg["swap_kernel"]["device"] = processed_cfg["device"]
+        # Auto-generate flow checkpoint path if not set
+        if processed_cfg["swap_kernel"].get("flow_checkpoint") is None:
+            processed_cfg["swap_kernel"]["flow_checkpoint"] = \
+                f"outputs/{name}/models/flow_${{pt.temp_low:.2f}}_${{pt.temp_high:.2f}}.pt"
+    
+    logging.getLogger(__name__).info(f"Processed unified config for experiment_type: {experiment_type}")
+    logging.getLogger(__name__).info(f"Generated experiment name: {name}")
+    
+    return processed_cfg 

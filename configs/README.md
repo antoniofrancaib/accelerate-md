@@ -1,3 +1,158 @@
+# Unified Configuration System
+
+AccelMD uses a single unified configuration file for all experiments. Switch between ALDP and GMM experiments by changing the `experiment_type` field.
+
+## Configuration File
+
+**`experiment.yaml`** - Single configuration file for all experiment types
+- Set `experiment_type: "aldp"` for ALDP cartesian experiments  
+- Set `experiment_type: "gmm"` for Gaussian Mixture Model experiments
+- Automatically generates appropriate experiment names
+- Automatically sets `target.type` based on `experiment_type`
+
+## How to Use
+
+1. **Edit the experiment type** in `configs/experiment.yaml`:
+   ```yaml
+   experiment_type: "aldp"  # or "gmm"
+   ```
+
+2. **Run the experiment**:
+   ```bash
+   sbatch run_experiment.sh
+   ```
+
+3. **Customize parameters** (optional):
+   - Edit the `aldp` or `gmm` sections for experiment-specific settings
+   - Modify shared `pt`, `trainer`, or `device` settings
+   - All experiments use the same PT and trainer settings
+
+## Configuration Structure
+
+```yaml
+# Top-level experiment selection
+experiment_type: "aldp"  # "aldp" or "gmm"
+name: "unified_experiment_auto"  # Auto-generated if not specified
+device: "cuda"
+
+# Shared settings for all experiments
+pt:
+  temperatures: [300.0, 400.0, 500.0]
+  num_chains: 32
+  num_steps: 200000
+  swap_interval: 500
+  step_size: 1e-4
+
+trainer:
+  realnvp:
+    model:
+      hidden_dim: 512
+      n_couplings: 150
+    training: {...}
+
+# Experiment-specific configurations (no overrides)
+aldp:
+  target:
+    data_path: "./datasets/aldp/position_min_energy.pt"
+    transform: cartesian
+    env: implicit
+  system: {...}
+
+gmm:
+  gmm_params:
+    dim: 3
+    n_mixes: 8
+    loc_scaling: 5.0
+    mode_arrangement: "random"
+    grid_range: [-6.0, 6.0]
+```
+
+### How It Works
+
+1. **Experiment type determines target**: `experiment_type: "aldp"` automatically sets `target.type: "aldp"`
+2. **Shared settings**: All experiments use the same `pt` and `trainer` configurations
+3. **Experiment-specific data only**: Only experiment-specific data paths and parameters are in the `aldp`/`gmm` sections
+4. **No redundancy**: No duplicate information or overrides needed
+
+### Auto-Generated Names
+
+When using `name: "unified_experiment_auto"`, the system generates descriptive names:
+
+- **ALDP**: `aldp_cart_{n_reps}rep_{n_couplings}coup_{hidden_dim}hidden`
+- **GMM**: `gmm_{dim}dim_{n_mixes}mod_{n_reps}rep_{mode_arrangement}`
+
+Examples:
+- `aldp_cart_3rep_150coup_512hidden`
+- `gmm_3dim_8mod_3rep_random`
+
+## Key Features
+
+### Simple Experiment Switching
+Switch between ALDP and GMM experiments by changing one line:
+```yaml
+experiment_type: "gmm"  # Change from "aldp" to "gmm"
+```
+
+### Unified Settings
+- **Same PT settings**: Both experiments use identical parallel tempering configuration
+- **Same trainer settings**: Both experiments use identical model architecture and training parameters
+- **Same evaluation settings**: Consistent evaluation across experiment types
+- **Automatic target setup**: `target.type` automatically set based on `experiment_type`
+
+### Clean Configuration
+- No redundant `target.type` fields in experiment sections
+- No override sections needed
+- Only experiment-specific data and parameters specified
+- Minimal configuration with maximum functionality
+
+### Validation
+- Validates experiment types (`aldp`, `gmm`)
+- Ensures required configurations are present
+- Provides clear error messages for misconfigurations
+
+## Customization Examples
+
+### Switch to GMM experiments:
+```yaml
+experiment_type: "gmm"  # That's it!
+```
+
+### Modify shared PT settings (affects both ALDP and GMM):
+```yaml
+pt:
+  temperatures: [280.0, 320.0, 360.0, 400.0]  # New temperature schedule
+  num_steps: 300000                           # Longer runs
+```
+
+### Use different model architecture (affects both experiments):
+```yaml
+trainer:
+  realnvp:
+    model:
+      hidden_dim: 1024        # Larger network
+      n_couplings: 200        # More coupling layers
+```
+
+### Modify GMM parameters only:
+```yaml
+gmm:
+  gmm_params:
+    dim: 5          # 5D instead of 3D
+    n_mixes: 12     # More mixture components
+```
+
+## Troubleshooting
+
+### "Missing 'experiment_type' field"
+- Ensure your config file has `experiment_type: "aldp"` or `"gmm"` at the top level
+
+### "No configuration found for experiment_type"
+- Ensure the corresponding configuration section exists (`aldp:` or `gmm:`)
+- Check that the section is not empty
+
+### "Invalid experiment_type"
+- `experiment_type` must be exactly `"aldp"` or `"gmm"` (case-sensitive)
+
 # Guide to High-Dimensional GMM Experiments
 
 This README provides guidelines for running GMM experiments with arbitrary dimensions. The codebase now supports running experiments on 2D, 5D, 60D, or any other dimensionality by simply changing the configuration.
