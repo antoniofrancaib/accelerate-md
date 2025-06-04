@@ -384,6 +384,7 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "pt": cfg.get("pt", {}),
         "trainer": cfg.get("trainer", {}),
         "evaluation": cfg.get("evaluation", {}),
+        "plots_and_metrics": cfg.get("plots_and_metrics", {}),  # Preserve plot/metrics flags
         "local_kernel": cfg.get("local_kernel", {}),
         "swap_kernel": cfg.get("swap_kernel", {}),
     }

@@ -14,7 +14,7 @@ device: "cuda"  # or "cpu"
 # Parallel Tempering Settings (shared)
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 3.00] # CHANGE this to larger values for gmm experiments
+  temperatures: [1.0, 20.00] # CHANGE this to larger values for gmm experiments
   num_chains: 32
   num_steps: 200000
   swap_interval: 500
@@ -91,13 +91,13 @@ plots_and_metrics:
   training_loss: true                    # Plot training/validation loss curves
   
   # Basic evaluation plots (generated with --evaluate flag)
-  bidirectional_verification: true       # GMM bidirectional scatter plot
+  bidirectional_verification: false       # GMM bidirectional scatter plot
   ramachandran_comparison: true          # ALDP Ramachandran plots
   
   # Swap rate and acceptance metrics
   swap_rate_evaluation: true             # Basic swap rate computation
-  acceptance_autocorrelation: true       # Legacy acceptance autocorr plots
-  moving_average_acceptance: true        # Legacy moving average plots
+  acceptance_autocorrelation: false       # Legacy acceptance autocorr plots
+  moving_average_acceptance: false        # Legacy moving average plots
   
   # Enhanced sampling metrics (advanced)
   integrated_autocorr_time: true         # Integrated autocorrelation analysis
