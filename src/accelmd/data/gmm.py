@@ -20,8 +20,10 @@ class TemperedGMMPairDataset(Dataset):
         temp_low (float): Low temperature (typically 1.0)
         temp_scaling_method (str): Method for temperature scaling ('sqrt' or 'linear')
     """
-    def __init__(self, gmm, n_samples, temp_high=10.0, temp_low=1.0, temp_scaling_method='sqrt'):
+    def __init__(self, gmm, n_samples, temp_high=None, temp_low=1.0, temp_scaling_method='sqrt'):
         """Initialize the dataset with high-temperature and low-temperature samples."""
+        if temp_high is None:
+            raise ValueError("temp_high must be explicitly specified")
         self.temp_high = temp_high
         self.temp_low = temp_low
         self.temp_scaling_method = temp_scaling_method

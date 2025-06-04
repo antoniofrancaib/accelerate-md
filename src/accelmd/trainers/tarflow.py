@@ -1,5 +1,5 @@
 from __future__ import annotations
-import copy, logging, math
+import copy, logging, math, json
 from pathlib import Path
 from typing import Dict, Any
 
@@ -100,6 +100,14 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
     best_loss = math.inf
     best_state = None
     step_idx = 0
+    
+    # Track training history for plotting
+    training_history = {
+        "train_loss": [],
+        "val_loss": [],  # Note: TarFlow doesn't have validation, so we'll use train_loss for both
+        "epochs": []
+    }
+    
     for epoch in range(tr_cfg["n_epochs"]):
         flow.train()
         running = 0.0
@@ -137,8 +145,20 @@ def train_tarflow(cfg: Dict[str, Any], target=None) -> Path:
             best_loss = epoch_loss
             best_state = copy.deepcopy(flow.state_dict())
 
+        # Track training history
+        training_history["train_loss"].append(epoch_loss)
+        training_history["epochs"].append(epoch + 1)
+
     # 7) Save best checkpoint ----------------------------------------------
     ckpt_path = Path(cfg["output"]["model_path"])
     torch.save(best_state, ckpt_path)
     logger.info("Saved best TarFlow model → %s", ckpt_path)
+    
+    # Save training history to JSON file (using train_loss for val_loss since no validation)
+    training_history["val_loss"] = training_history["train_loss"].copy()
+    history_path = Path(cfg["output"]["training_history"])
+    with open(history_path, 'w') as f:
+        json.dump(training_history, f)
+    logger.info("Training history saved to %s", history_path)
+    
     return ckpt_path 

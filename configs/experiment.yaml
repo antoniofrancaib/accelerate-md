@@ -2,7 +2,7 @@
 # UNIFIED EXPERIMENT CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 # Choose experiment type: "aldp" or "gmm"
-experiment_type: "aldp"  # Change this to switch between experiments
+experiment_type: "aldp"  # Change this to switch between experiments: gmm or aldp
 
 # ─────────────────────────────────────────────────────────────
 # Experiment identity + hardware
@@ -14,7 +14,7 @@ device: "cuda"  # or "cpu"
 # Parallel Tempering Settings (shared)
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 1.5, 2.0]
+  temperatures: [1.0, 3.00] # CHANGE this to larger values for gmm experiments
   num_chains: 32
   num_steps: 200000
   swap_interval: 500
@@ -29,7 +29,7 @@ model_type: realnvp
 trainer:
   realnvp:
     model:
-      hidden_dim: 512
+      hidden_dim: 1024
       n_couplings: 150
       use_permutation: true
     training:
@@ -77,13 +77,36 @@ gmm:
     grid_range: [-6.0, 6.0]
 
 # ─────────────────────────────────────────────────────────────
-# SHARED CONFIGURATIONS
-# ─────────────────────────────────────────────────────────────
-
 # Evaluation settings
+# ─────────────────────────────────────────────────────────────
 evaluation:
   num_samples_to_plot: 1000000
   num_samples_for_eval: 10000
+
+# ─────────────────────────────────────────────────────────────
+# PLOT AND METRICS CONTROL FLAGS
+# ─────────────────────────────────────────────────────────────
+plots_and_metrics:
+  # Training plots (generated with --train flag)
+  training_loss: true                    # Plot training/validation loss curves
+  
+  # Basic evaluation plots (generated with --evaluate flag)
+  bidirectional_verification: true       # GMM bidirectional scatter plot
+  ramachandran_comparison: true          # ALDP Ramachandran plots
+  
+  # Swap rate and acceptance metrics
+  swap_rate_evaluation: true             # Basic swap rate computation
+  acceptance_autocorrelation: true       # Legacy acceptance autocorr plots
+  moving_average_acceptance: true        # Legacy moving average plots
+  
+  # Enhanced sampling metrics (advanced)
+  integrated_autocorr_time: true         # Integrated autocorrelation analysis
+  effective_sample_size: true            # ESS analysis
+  round_trip_time: true                  # Round trip and exploration analysis
+
+# ─────────────────────────────────────────────────────────────
+# SHARED CONFIGURATIONS
+# ─────────────────────────────────────────────────────────────
 
 # Kernel choices
 local_kernel:

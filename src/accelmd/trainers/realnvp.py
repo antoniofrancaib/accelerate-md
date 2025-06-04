@@ -207,7 +207,15 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     best_loss = float("inf")
     best_state = None
     step_idx = 0
-    patience_counter = 0        # ← NEW: prevents NameError
+    patience_counter = 0
+    
+    # Track training history for plotting
+    training_history = {
+        "train_loss": [],
+        "val_loss": [],
+        "epochs": []
+    }
+    
     for epoch in range(tr_cfg["n_epochs"]):
         flow.train()
         running = 0.0
@@ -320,6 +328,11 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
             logger.info("Early stopping triggered")
             break
 
+        # Track training history for plotting
+        training_history["train_loss"].append(train_loss)
+        training_history["val_loss"].append(val_loss)
+        training_history["epochs"].append(epoch+1)
+
     # Save the best model, or the last one if no good model was found
     logger.info("Best val loss: %f", best_loss)
     logger.info("Training completed, best val loss: %f", best_loss)
@@ -333,6 +346,13 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         torch.save(flow.state_dict(), checkpoint_path)
     
     logger.info("Final model saved to %s", checkpoint_path)
+
+    # Save training history to JSON file
+    history_path = Path(cfg["output"]["training_history"])
+    with open(history_path, 'w') as f:
+        json.dump(training_history, f)
+    logger.info("Training history saved to %s", history_path)
+
     return checkpoint_path
 
 

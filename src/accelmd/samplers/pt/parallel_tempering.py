@@ -66,8 +66,8 @@ class ParallelTempering(LangevinDynamics):
             return self._sample_per_temp_new()
         else:
             # Fallback to legacy implementation
-        new_samples, acc = super(ParallelTempering, self).sample()
-        return new_samples, acc
+            new_samples, acc = super(ParallelTempering, self).sample()
+            return new_samples, acc
     
     def _sample_per_temp_new(self):
         """Sample using new LocalKernel interface."""
@@ -187,19 +187,18 @@ class ParallelTempering(LangevinDynamics):
                 new_energy_a = torch.where(is_accept.squeeze(-1), E_y_hi, chain_a_energy)
                 new_energy_b = torch.where(is_accept.squeeze(-1), E_y_lo, chain_b_energy)
             
-            # Update gradients (recompute for accepted configurations)
-            new_chain_a_req_grad = new_chain_a.clone().requires_grad_()
-            new_chain_b_req_grad = new_chain_b.clone().requires_grad_()
-            
-            E_a_grad = self.base_energy(new_chain_a_req_grad) / temp_a
-            E_b_grad = self.base_energy(new_chain_b_req_grad) / temp_b
-            
-            grad_a = torch.autograd.grad(E_a_grad.sum(), new_chain_a_req_grad, create_graph=False)[0]
-            grad_b = torch.autograd.grad(E_b_grad.sum(), new_chain_b_req_grad, create_graph=False)[0]
+            # For gradients, use simpler approach similar to legacy implementation
+            # Scale existing gradients by temperature ratio if swap is accepted
+            if temp_a < temp_b:  # chain_a is low-T, chain_b is high-T
+                new_chain_a_score = torch.where(is_accept, chain_b_score * temp_b / temp_a, chain_a_score)
+                new_chain_b_score = torch.where(is_accept, chain_a_score * temp_a / temp_b, chain_b_score)
+            else:  # chain_b is low-T, chain_a is high-T  
+                new_chain_a_score = torch.where(is_accept, chain_b_score * temp_b / temp_a, chain_a_score)
+                new_chain_b_score = torch.where(is_accept, chain_a_score * temp_a / temp_b, chain_b_score)
             
             # Update chain data
-            self.add_chain(chain_a_index, new_chain_a, new_energy_a / temp_a, grad_a)
-            self.add_chain(chain_b_index, new_chain_b, new_energy_b / temp_b, grad_b)
+            self.add_chain(chain_a_index, new_chain_a, new_energy_a / temp_a, new_chain_a_score)
+            self.add_chain(chain_b_index, new_chain_b, new_energy_b / temp_b, new_chain_b_score)
             
             return accept_prob.mean().item()
     

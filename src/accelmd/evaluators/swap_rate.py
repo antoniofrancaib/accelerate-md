@@ -51,7 +51,9 @@ def _init_wandb(cfg: Dict[str, Any]) -> None:
     else:
         n_modes = int(gmm_cfg.get("n_mixes", 0))
     t_low = float(pt_cfg.get("temp_low", 1.0))
-    t_high = float(pt_cfg.get("temp_high", 10.0))
+    t_high = float(pt_cfg.get("temp_high"))
+    if t_high is None:
+        raise ValueError("pt.temp_high must be explicitly specified")
     
     # Initialize wandb run
     wandb.init(

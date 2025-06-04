@@ -152,6 +152,16 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
     
     elif kernel_type == "realnvp":
         flow_checkpoint = kernel_cfg.get("flow_checkpoint")
+        
+        # If checkpoint path not explicitly set or still contains template variables, 
+        # generate it dynamically from current temperature pair
+        if not flow_checkpoint or "${" in str(flow_checkpoint):
+            name = cfg.get("name", "experiment")
+            t_low = cfg.get("pt", {}).get("temp_low", 1.0)
+            t_high = cfg.get("pt", {}).get("temp_high", 2.0)
+            flow_checkpoint = f"outputs/{name}/models/flow_{t_low:.2f}_{t_high:.2f}.pt"
+            logging.getLogger(__name__).info(f"Auto-generated flow checkpoint path: {flow_checkpoint}")
+        
         if not flow_checkpoint:
             logging.getLogger(__name__).warning("RealNVP swap kernel requires flow_checkpoint")
             if kernel_cfg.get("fallback_to_vanilla", False):
@@ -213,6 +223,16 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
     
     elif kernel_type == "tarflow":
         flow_checkpoint = kernel_cfg.get("flow_checkpoint")
+        
+        # If checkpoint path not explicitly set or still contains template variables, 
+        # generate it dynamically from current temperature pair
+        if not flow_checkpoint or "${" in str(flow_checkpoint):
+            name = cfg.get("name", "experiment")
+            t_low = cfg.get("pt", {}).get("temp_low", 1.0)
+            t_high = cfg.get("pt", {}).get("temp_high", 2.0)
+            flow_checkpoint = f"outputs/{name}/models/flow_{t_low:.2f}_{t_high:.2f}.pt"
+            logging.getLogger(__name__).info(f"Auto-generated flow checkpoint path: {flow_checkpoint}")
+        
         if not flow_checkpoint:
             logging.getLogger(__name__).warning("TarFlow swap kernel requires flow_checkpoint")
             if kernel_cfg.get("fallback_to_vanilla", False):
@@ -279,9 +299,9 @@ def load_config(config_path: str) -> dict:
 
     # Initialize temp_low and temp_high for processing
     pt_cfg = cfg.get("pt", {})
-    temps = pt_cfg.get("temperatures", [1.0, 10.0])
-    if len(temps) < 2:
-        raise ValueError("pt.temperatures must contain at least 2 temperature values")
+    temps = pt_cfg.get("temperatures")
+    if not temps or len(temps) < 2:
+        raise ValueError("pt.temperatures must be explicitly specified with at least 2 temperature values")
     
     # Set initial values from first and last temperatures for compatibility
     cfg["pt"]["temp_low"] = float(temps[0])
@@ -358,6 +378,7 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     
     # Start with base configuration (excluding experiment-specific sections)
     processed_cfg = {
+        "experiment_type": experiment_type,  # Preserve experiment_type
         "device": cfg.get("device", "cuda"),
         "model_type": cfg.get("model_type", "realnvp"),
         "pt": cfg.get("pt", {}),
@@ -381,7 +402,9 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             n_couplings = model_cfg.get("n_couplings", 150)
             hidden_dim = model_cfg.get("hidden_dim", 512)
             
-            name = f"aldp_cart_{n_reps}rep_{n_couplings}coup_{hidden_dim}hidden"
+            # Include temperature range in name to avoid directory collisions
+            temp_range = f"{temps[0]:.1f}to{temps[-1]:.1f}"
+            name = f"aldp_cart_{n_reps}rep_{temp_range}_{n_couplings}coup_{hidden_dim}hidden"
             
         elif experiment_type == "gmm":
             gmm_cfg = exp_config.get("gmm_params", {})
@@ -395,7 +418,9 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             n_reps = len(temps)
             mode_arrangement = gmm_cfg.get("mode_arrangement", "random")
             
-            name = f"gmm_{dim}dim_{n_mixes}mod_{n_reps}rep_{mode_arrangement}"
+            # Include temperature range in name to avoid directory collisions
+            temp_range = f"{temps[0]:.1f}to{temps[-1]:.1f}"
+            name = f"gmm_{dim}dim_{n_mixes}mod_{n_reps}rep_{temp_range}_{mode_arrangement}"
     
     processed_cfg["name"] = name
     
@@ -423,10 +448,11 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     
     if processed_cfg.get("swap_kernel"):
         processed_cfg["swap_kernel"]["device"] = processed_cfg["device"]
-        # Auto-generate flow checkpoint path if not set
+        # Don't auto-generate flow checkpoint path here - let build_swap_kernel handle it dynamically
+        # This prevents early template substitution with wrong temperature values
         if processed_cfg["swap_kernel"].get("flow_checkpoint") is None:
-            processed_cfg["swap_kernel"]["flow_checkpoint"] = \
-                f"outputs/{name}/models/flow_${{pt.temp_low:.2f}}_${{pt.temp_high:.2f}}.pt"
+            # Set a placeholder that will be handled dynamically
+            processed_cfg["swap_kernel"]["flow_checkpoint"] = None
     
     logging.getLogger(__name__).info(f"Processed unified config for experiment_type: {experiment_type}")
     logging.getLogger(__name__).info(f"Generated experiment name: {name}")
