@@ -129,8 +129,15 @@ class RealNVPSwap(SwapKernel):
         if self.flow is None:
             raise RuntimeError("Flow not loaded. Call _load_flow() first.")
         
-        x_lo = x_lo.to(self.device)
-        x_hi = x_hi.to(self.device)
+        # Store original dtypes for restoration
+        orig_dtype_lo = x_lo.dtype
+        orig_dtype_hi = x_hi.dtype
+        
+        # Convert to flow model's dtype (typically float32)
+        flow_dtype = next(self.flow.parameters()).dtype
+        x_lo = x_lo.to(device=self.device, dtype=flow_dtype)
+        x_hi = x_hi.to(device=self.device, dtype=flow_dtype)
+        
         batch_size = x_lo.shape[0]
         
         with torch.no_grad():
@@ -144,6 +151,11 @@ class RealNVPSwap(SwapKernel):
             # For bidirectional flow: log q(y_lo,y_hi|x_lo,x_hi) / q(x_lo,x_hi|y_lo,y_hi)
             # This includes the Jacobian determinants from the flow transformations
             log_qratio = logdet_hi_to_lo + logdet_lo_to_hi
+            
+            # Convert back to original dtypes
+            y_lo = y_lo.to(dtype=orig_dtype_lo)
+            y_hi = y_hi.to(dtype=orig_dtype_hi)
+            log_qratio = log_qratio.to(dtype=orig_dtype_lo)
         
         return y_lo, y_hi, log_qratio
     

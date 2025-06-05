@@ -35,7 +35,7 @@ from src.accelmd.targets import build_target
 
 # Import plot generation scripts
 from scripts.generate_bidirectional_plots import generate_bidirectional_plot
-from scripts.generate_ramachandran_plots import generate_ramachandran_comparison_for_pair
+from scripts.generate_ramachandran_plots import EnhancedRamachandranPlotter
 
 # Unified trainer registry for dynamic backend selection
 TRAINER_REGISTRY = {
@@ -152,21 +152,25 @@ def _evaluate(cfg: Dict[str, Any]):
         _LOG.info("Swap-rate evaluation disabled by configuration")
 
     # -- 2) legacy metrics (two extra PNGs) ---------------------------------
-    if plots_config.get("acceptance_autocorrelation", True) or plots_config.get("moving_average_acceptance", True):
-        _LOG.info("Running legacy metrics")
-        if plots_config.get("acceptance_autocorrelation", True):
-            acceptance_autocorrelation.run(cfg)
-        if plots_config.get("moving_average_acceptance", True):
-            moving_average_acceptance.run(cfg)
-        _LOG.info("Legacy metrics calculation completed")
+    if plots_config.get("acceptance_autocorrelation", True):
+        _LOG.info("Running acceptance autocorrelation metric")
+        acceptance_autocorrelation.run(cfg)
+        _LOG.info("Acceptance autocorrelation completed")
     else:
-        _LOG.info("Legacy metrics disabled by configuration")
+        _LOG.info("Acceptance autocorrelation disabled by configuration")
+        
+    if plots_config.get("moving_average_acceptance", True):
+        _LOG.info("Running moving average acceptance metric")
+        moving_average_acceptance.run(cfg)
+        _LOG.info("Moving average acceptance completed")
+    else:
+        _LOG.info("Moving average acceptance disabled by configuration")
 
     # -- 3) enhanced sampling metrics (vanilla vs flow comparison) ----------
     enhanced_metrics_enabled = any([
-        plots_config.get("integrated_autocorr_time", True),
-        plots_config.get("effective_sample_size", True),
-        plots_config.get("round_trip_time", True)
+        plots_config.get("autocorrelation_comparison", True),
+        plots_config.get("effective_sample_size_comparison", True),
+        plots_config.get("round_trip_exploration", True)
     ])
     
     if enhanced_metrics_enabled:
@@ -178,15 +182,15 @@ def _evaluate(cfg: Dict[str, Any]):
             from src.accelmd.metrics import round_trip_time
             
             # Run enhanced sampling metrics based on config
-            if plots_config.get("integrated_autocorr_time", True):
+            if plots_config.get("autocorrelation_comparison", True):
                 _LOG.info("Running integrated autocorrelation time analysis")
                 integrated_autocorr_time.run(cfg)
             
-            if plots_config.get("effective_sample_size", True):
+            if plots_config.get("effective_sample_size_comparison", True):
                 _LOG.info("Running effective sample size analysis")
                 effective_sample_size.run(cfg)
             
-            if plots_config.get("round_trip_time", True):
+            if plots_config.get("round_trip_exploration", True):
                 _LOG.info("Running round-trip time and exploration analysis")
                 round_trip_time.run(cfg)
             
@@ -203,7 +207,7 @@ def _evaluate(cfg: Dict[str, Any]):
     
     if experiment_type == "aldp" and plots_config.get("ramachandran_comparison", True):
         # Generate Ramachandran plots for ALDP experiments
-        _LOG.info("Generating Ramachandran comparison plots for ALDP experiment")
+        _LOG.info("Generating enhanced Ramachandran comparison plots for ALDP experiment")
         try:
             device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
             t_low = float(cfg["pt"]["temp_low"])
@@ -213,15 +217,24 @@ def _evaluate(cfg: Dict[str, Any]):
             ramachandran_output_dir = Path(cfg["output"]["plots_dir"]) / "ramachandran_comparison"
             
             if flow_model_path.exists():
-                generate_ramachandran_comparison_for_pair(
-                    cfg, t_low, t_high, flow_model_path, ramachandran_output_dir, device
+                # Initialize enhanced plotter
+                plotter = EnhancedRamachandranPlotter(cfg)
+                
+                # Build target
+                target = build_target(cfg, device)
+                
+                # Generate enhanced plots
+                plot_file, validation = plotter.generate_comparison_plot(
+                    target, t_low, t_high, str(flow_model_path), ramachandran_output_dir
                 )
-                _LOG.info("Ramachandran comparison plots generated successfully")
+                
+                _LOG.info("Enhanced Ramachandran comparison plots generated successfully: %s", plot_file)
+                _LOG.info("Validation results: %s", validation)
             else:
                 _LOG.warning(f"Flow model not found at {flow_model_path}. Skipping Ramachandran plots.")
                 
         except Exception as e:
-            _LOG.error(f"Failed to generate Ramachandran plots: {str(e)}")
+            _LOG.error(f"Failed to generate enhanced Ramachandran plots: {str(e)}")
             _LOG.warning("Continuing without Ramachandran plots...")
     
     elif experiment_type == "gmm":
