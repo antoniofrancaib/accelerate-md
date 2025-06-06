@@ -14,7 +14,7 @@ device: "cuda"  # or "cpu"
 # Parallel Tempering Settings (shared)
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 40.00] # CHANGE this to larger values for gmm experiments
+  temperatures: [1.0, 1.5] # Lower temperature range suitable for ALDP
   num_chains: 32
   num_steps: 200000
   swap_interval: 500
@@ -120,7 +120,7 @@ plots_and_metrics:
   
   # Basic evaluation plots (generated with --evaluate flag)
   bidirectional_verification: false           # GMM bidirectional scatter plot
-  ramachandran_comparison: true                # ALDP Ramachandran plots
+  ramachandran_comparison: true                 # ALDP Ramachandran plots
   
   # Swap rate and acceptance metrics
   swap_rate_evaluation: true                   # Basic swap rate computation → swap_rate_flow_{suffix}.json

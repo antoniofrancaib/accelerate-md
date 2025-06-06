@@ -387,6 +387,8 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "plots_and_metrics": cfg.get("plots_and_metrics", {}),  # Preserve plot/metrics flags
         "local_kernel": cfg.get("local_kernel", {}),
         "swap_kernel": cfg.get("swap_kernel", {}),
+        "mcmc": cfg.get("mcmc", {}),  # Preserve MCMC configuration
+        "figure5_1": cfg.get("figure5_1", {}),  # Preserve Figure 5.1 configuration
     }
     
     # Auto-generate experiment name if needed

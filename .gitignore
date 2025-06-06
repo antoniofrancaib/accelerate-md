@@ -4,7 +4,7 @@ plots/
 results/
 scripts/ 
 diagrams/
-
+fab-torch/
 __pycache__/
 *.pyc
 *.py[cod]
