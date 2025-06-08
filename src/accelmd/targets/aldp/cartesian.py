@@ -119,7 +119,7 @@ class AldpPotentialCart(Boltzmann, TargetDistribution):
         else:
             x_shape = x.shape
             x_reshaped = x.reshape(-1, self.dim)
-            log_prob= super().log_prob(x).log_prob(x_reshaped)
+            log_prob = super().log_prob(x_reshaped)
             log_prob = log_prob.reshape(x_shape[:-1])
         return log_prob
 

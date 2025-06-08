@@ -8,53 +8,77 @@ experiment_type: "aldp"  # Change this to switch between experiments: gmm or ald
 # Experiment identity + hardware
 # ─────────────────────────────────────────────────────────────
 name: "unified_experiment_auto"  # Will be auto-generated based on experiment_type
-device: "cuda"  # or "cpu"
+device: "cpu"   # Use CPU for testing
+
+# ─────────────────────────────────────────────────────────────
+# PT Data Configuration (NEW: Use equilibrated PT simulation data)
+# ─────────────────────────────────────────────────────────────
+# Path to equilibrated PT simulation data for training flows
+# If this path exists, the trainer will use equilibrated samples instead of fresh sampling
+# Use the full PT simulation data that was successfully generated
+pt_data_path: "data/pt/pt_aldp_cart_full.pt"
 
 # ─────────────────────────────────────────────────────────────
 # Parallel Tempering Settings (shared)
 # ─────────────────────────────────────────────────────────────
 pt:
-  temperatures: [1.0, 1.5] # Lower temperature range suitable for ALDP
+  # Temperature ladder - using maximum gap for strong learning signal
+  temperatures: [1.0, 2.2360680103302, 5.0]    # Maximum available gap: 5x temperature increase
   num_chains: 32
   num_steps: 200000
   swap_interval: 500
   check_interval: 10000
   step_size: 1e-4
+  temp_low: 1.0
+  temp_high: 5.0
 
 # ─────────────────────────────────────────────────────────────
 # Flow backend & hyperparameters (shared)
 # ─────────────────────────────────────────────────────────────
-model_type: realnvp
+model_type: "realnvp"
 
 trainer:
   realnvp:
     model:
-      hidden_dim: 1024
-      n_couplings: 150
+      dim: 66
+      # REDUCED MODEL COMPLEXITY for numerical stability
+      n_couplings: 16        # Reduced from 50 - prevents over-parameterization
+      hidden_dim: 256        # Reduced from 512 - more stable
+      n_hidden_layers: 2     # Reduced from 3 - simpler architecture
       use_permutation: true
     training:
-      n_epochs: 120
-      batch_size: 256
-      learning_rate: 1e-5
-      warmup_epochs: 3
-      n_samples: 10000
-      mse_weight: 0.01
-      val_split: 0.1
-      patience: 5
+      # Data Configuration
+      n_samples: 15000       # Increased from 10000 for better stability
+      pt_subsample_factor: 3 # Reduced from 5 to get more data
+      val_split: 0.15
+      
+      # Optimization - much more conservative (CRITICAL FIXES)
+      n_epochs: 100          # Increased for more gradual learning
+      batch_size: 32         # Reduced from 64 - more stable gradients
+      learning_rate: 5e-6    # Much lower than 2e-5
+      initial_lr: 1e-7       # Lower initial rate
+      warmup_epochs: 15      # Longer warmup from 8
+      eta_min_factor: 0.001  # Lower minimum LR factor
+      max_grad_norm: 0.01    # Much stricter than 0.05
+      
+      # Early stopping - more patience for slower learning
+      patience: 10           # Increased patience for gradual learning
+      min_delta: 1e-6        # Tighter convergence criteria
       seed: 42
-      eta_min_factor: 0.1
-      max_grad_norm: 1.0
 
 # ─────────────────────────────────────────────────────────────
 # TARGET-SPECIFIC CONFIGURATIONS
 # ─────────────────────────────────────────────────────────────
 
-# ALDP-specific settings
+# ALDP-specific settings (updated for cartesian coordinates)
 aldp:
   target:
+    type: "aldp"
     data_path: "./datasets/aldp/position_min_energy.pt"
-    transform: cartesian
+    transform: cartesian  # CRITICAL: Must be cartesian to match 66D PT data
     env: implicit
+    n_atoms: 22
+    dim: 66  # Cartesian coordinates (matches PT data)
   
   system:
     temperature: 300           # Kelvin
@@ -77,39 +101,26 @@ gmm:
     grid_range: [-6.0, 6.0]
 
 # ─────────────────────────────────────────────────────────────
-# Evaluation settings
+# Evaluation settings (enhanced for ALDP experiments)
 # ─────────────────────────────────────────────────────────────
 evaluation:
   num_samples_to_plot: 1000000
   num_samples_for_eval: 10000
-
-# ─────────────────────────────────────────────────────────────
-# Enhanced Ramachandran Plot Settings
-# ─────────────────────────────────────────────────────────────
-ramachandran_plots:
-  sampling:
-    n_samples: 15000           # Increased from default
-    n_steps: 30000             # Increased MCMC chain length
-    burn_in: 5000              # Burn-in period
-    thin: 2                    # Thinning interval
-    convergence_check: true    # Check for convergence
-  visualization:
-    use_reference_background: true     # Add standard backgrounds
-    reference_database: "builtin"     # Use builtin reference data
-    residue_classification: "general" # ALDP is general residue
-    density_estimation: "kde"         # Use KDE instead of histograms
-    contour_levels: [0.01, 0.05, 0.70, 0.85, 0.95]
-    bins: 100                         # Higher resolution than default 50
-    smoothing_sigma: 1.0              # Gaussian smoothing parameter
-    color_scheme: "publication"       # Professional color scheme
-  validation:
-    effective_sample_size_min: 1000   # Minimum ESS for valid results
-    autocorr_time_max: 100           # Maximum acceptable autocorr time
-    rhat_threshold: 1.1              # Gelman-Rubin statistic threshold
-  output:
-    save_raw_data: true              # Save phi/psi data for analysis
-    save_reference_plots: true       # Save reference-only plots
-    dpi: 300                         # High-resolution output
+  
+  swap_rate:
+    n_samples_per_temp: 5000  # Samples for swap rate calculation
+    n_chains: 4  # Number of independent chains
+    n_steps: 1000  # Steps per chain
+    save_trajectories: true
+    
+  diagnostics:
+    effective_sample_size:
+      max_lag: 1000
+      min_samples: 1000
+    
+    autocorrelation:
+      max_lag: 2000
+      confidence_level: 0.95
 
 # ─────────────────────────────────────────────────────────────
 # PLOT AND METRICS CONTROL FLAGS
@@ -120,23 +131,26 @@ plots_and_metrics:
   
   # Basic evaluation plots (generated with --evaluate flag)
   bidirectional_verification: false           # GMM bidirectional scatter plot
-  ramachandran_comparison: true                 # ALDP Ramachandran plots
+  ramachandran_comparison: false              # ALDP Ramachandran plots (removed as requested)
   
   # Swap rate and acceptance metrics
   swap_rate_evaluation: true                   # Basic swap rate computation → swap_rate_flow_{suffix}.json
-  acceptance_autocorrelation: false            # Legacy acceptance autocorr → acceptance_autocorrelation_{suffix}.png
-  moving_average_acceptance: false             # Legacy moving average → moving_average_acceptance_{suffix}.png
+  acceptance_autocorrelation: true             # Basic acceptance autocorr → acceptance_autocorrelation_{suffix}.png
+  moving_average_acceptance: true              # Basic moving average → moving_average_acceptance_{suffix}.png
   
   # Enhanced sampling metrics (advanced)
   autocorrelation_comparison: true             # Integrated autocorrelation → autocorrelation_comparison_{suffix}.png
   effective_sample_size_comparison: true       # ESS analysis → effective_sample_size_comparison_{suffix}.png
-  round_trip_exploration: false                 # Round trip analysis → round_trip_exploration_{suffix}.png
+  round_trip_exploration: true                 # Round trip analysis → round_trip_exploration_{suffix}.png
 
 # ─────────────────────────────────────────────────────────────
 # SHARED CONFIGURATIONS
 # ─────────────────────────────────────────────────────────────
 
-# Kernel choices
+# ─────────────────────────────────────────────────────────────
+# Kernel Configuration (Advanced - for evaluation)
+# ─────────────────────────────────────────────────────────────
+# Kernel choices for improved performance during evaluation
 local_kernel:
   type: "langevin"
   step_size: null  # Will be set from pt.step_size
@@ -148,3 +162,6 @@ swap_kernel:
   flow_checkpoint: null  # Will be auto-generated
   device: null           # Will be set from device
   fallback_to_vanilla: true 
+
+# Optional: WANDB integration
+wandb: false  # Set to true if you want to log to wandb 

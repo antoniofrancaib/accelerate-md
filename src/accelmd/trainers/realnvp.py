@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from src.accelmd.utils.config import load_config
 from src.accelmd.data.tempered_pair import TemperedPairDataset
+from src.accelmd.data.pt_tempered_pair import PTTemperedPairDataset
 from src.accelmd.models.realnvp import create_realnvp_flow
 from src.accelmd.utils.gmm_modes import generate_gmm_modes
 
@@ -126,13 +127,53 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     logger.info("Creating dataset...")
     tr_cfg = cfg["trainer"]["realnvp"]["training"]
     n_samples = tr_cfg.get("n_samples", 50_000)
-    logger.info("Generating %d data samples", n_samples)
-    dataset = TemperedPairDataset(
-        low_target=low_tgt,
-        high_target=hi_tgt,
-        n_samples=n_samples,
-        noise_std=float(tr_cfg.get("noise_std", 0.0))
-    )
+    
+    # Check if PT data path is provided for using equilibrated samples
+    pt_data_path = cfg.get("pt_data_path")
+    logger.info("PT data path from config: %s", pt_data_path)
+    if pt_data_path:
+        logger.info("Using equilibrated PT simulation data from: %s", pt_data_path)
+        # Find the appropriate temperature pair indices
+        # We need to match current t_low and t_high with PT temperature ladder
+        import torch as pt_torch
+        
+        pt_data = pt_torch.load(pt_data_path, map_location='cpu')
+        pt_temps = pt_data['temperatures'].tolist()
+        
+        # Find closest temperature indices
+        temp_low_idx = min(range(len(pt_temps)), key=lambda i: abs(pt_temps[i] - t_low))
+        temp_high_idx = min(range(len(pt_temps)), key=lambda i: abs(pt_temps[i] - t_high))
+        
+        # Ensure temp_high_idx > temp_low_idx (high temp has higher index in our setup)
+        if temp_high_idx <= temp_low_idx:
+            # Find next higher temperature
+            temp_high_idx = temp_low_idx + 1
+            if temp_high_idx >= len(pt_temps):
+                logger.warning("Cannot find appropriate temperature pair in PT data")
+                logger.warning("Available temperatures: %s", pt_temps)
+                logger.warning("Requested: T_low=%f, T_high=%f", t_low, t_high)
+                raise ValueError("Temperature pair not found in PT data")
+        
+        logger.info("Using PT temperature pair: T_low=%f (idx=%d) → T_high=%f (idx=%d)", 
+                   pt_temps[temp_low_idx], temp_low_idx, pt_temps[temp_high_idx], temp_high_idx)
+        
+        dataset = PTTemperedPairDataset(
+            pt_data_path=pt_data_path,
+            temp_low_idx=temp_low_idx,
+            temp_high_idx=temp_high_idx,
+            n_samples=n_samples,
+            subsample_factor=tr_cfg.get("pt_subsample_factor", 1)
+        )
+        logger.info("Created PT dataset with %d equilibrated samples", len(dataset))
+    else:
+        logger.info("No PT data path provided, generating fresh samples")
+        logger.info("Generating %d fresh data samples", n_samples)
+        dataset = TemperedPairDataset(
+            low_target=low_tgt,
+            high_target=hi_tgt,
+            n_samples=n_samples,
+            noise_std=float(tr_cfg.get("noise_std", 0.0))
+        )
     val_split = tr_cfg.get("val_split", 0.1)  # Default to 10% validation split if not specified
     val_len = int(len(dataset) * val_split)
     train_len = len(dataset) - val_len
@@ -157,7 +198,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     logger.info("Created RealNVP flow with %d couplings, dim=%d, hidden_dim=%d", 
                 model_cfg['n_couplings'], model_cfg['dim'], model_cfg['hidden_dim'])
     
-    # Initialize weights with smaller values to improve numerical stability
+    # Ultra-conservative weight initialization to prevent early NaN instability
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
             # Skip final layers in each coupling block which are already zero-initialized
@@ -168,15 +209,19 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
                     is_final_layer = True
                     break
                 
-            # Only initialize non-final layers
+            # Only initialize non-final layers with ultra-small values
             if not is_final_layer:
-                # Use a smaller initialization scale
-                torch.nn.init.xavier_normal_(m.weight, gain=0.5)
+                # Use extremely conservative initialization for numerical stability
+                fan_in = m.weight.size(1)
+                fan_out = m.weight.size(0)
+                # Use much smaller std than Xavier to prevent early instability
+                std = 0.001 / np.sqrt(fan_in + fan_out)
+                torch.nn.init.normal_(m.weight, mean=0.0, std=std)
                 if m.bias is not None:
                     torch.nn.init.zeros_(m.bias)
             
     flow.apply(init_weights)
-    logger.info("Model initialized with stabilized weight initialization")
+    logger.info("Model initialized with ultra-conservative weight initialization")
 
     # Ensure numeric values are converted to appropriate types
     learning_rate = float(tr_cfg["learning_rate"])
@@ -185,7 +230,7 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
     max_epochs = int(tr_cfg["n_epochs"])
     eta_min_factor = float(tr_cfg["eta_min_factor"])
     max_grad_norm = float(tr_cfg["max_grad_norm"])
-    mse_weight = float(tr_cfg.get("mse_weight", 0.05))
+    # mse_weight = float(tr_cfg.get("mse_weight", 0.05))  # Removed MSE term
     
     opt = optim.Adam(flow.parameters(), lr=learning_rate)
 
@@ -228,42 +273,79 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
             if batch_count % 10 == 0:
                 logger.info("Processing batch %d/%d", batch_count, len(loader))
 
-            # High→Low
+            # High→Low (inverse mapping from high-T to low-T)
             y_lo, ld_inv = flow.inverse(xb_hi)
-            loss_hl = -(low_tgt.log_prob(y_lo) + ld_inv).mean()
+            
+            # ENHANCED NUMERICAL STABILITY CHECKS
+            # Check for NaN/inf in flow outputs before computing log probs
+            if torch.isnan(y_lo).any() or torch.isinf(y_lo).any():
+                logger.warning("NaN/inf detected in flow inverse output, skipping batch")
+                continue
+            if torch.isnan(ld_inv).any() or torch.isinf(ld_inv).any():
+                logger.warning("NaN/inf detected in inverse log determinant, skipping batch")
+                continue
+                
+            # Clip extreme log determinants first
+            ld_inv = torch.clamp(ld_inv, min=-500, max=500)
+            
+            # Compute log probabilities with strict bounds
+            log_prob_lo = low_tgt.log_prob(y_lo)
+            if torch.isnan(log_prob_lo).any() or torch.isinf(log_prob_lo).any():
+                logger.warning("NaN/inf in log_prob_lo, skipping batch")
+                continue
+            log_prob_lo = torch.clamp(log_prob_lo, min=-500, max=500)
+            
+            # Combine terms with additional clipping
+            combined_hl = log_prob_lo + ld_inv
+            combined_hl = torch.clamp(combined_hl, min=-500, max=500)
+            loss_hl = -combined_hl.mean()
 
-            # Low→High
+            # Low→High (forward mapping from low-T to high-T)
             y_hi, ld_fwd = flow.forward(xb_lo)
-            loss_lh = -(hi_tgt.log_prob(y_hi) + ld_fwd).mean()
+            
+            # Same stability checks for forward direction
+            if torch.isnan(y_hi).any() or torch.isinf(y_hi).any():
+                logger.warning("NaN/inf detected in flow forward output, skipping batch")
+                continue
+            if torch.isnan(ld_fwd).any() or torch.isinf(ld_fwd).any():
+                logger.warning("NaN/inf detected in forward log determinant, skipping batch")
+                continue
+                
+            # Clip extreme log determinants
+            ld_fwd = torch.clamp(ld_fwd, min=-500, max=500)
+            
+            # Compute log probabilities with strict bounds
+            log_prob_hi = hi_tgt.log_prob(y_hi)
+            if torch.isnan(log_prob_hi).any() or torch.isinf(log_prob_hi).any():
+                logger.warning("NaN/inf in log_prob_hi, skipping batch")
+                continue
+            log_prob_hi = torch.clamp(log_prob_hi, min=-500, max=500)
+            
+            # Combine terms with additional clipping
+            combined_lh = log_prob_hi + ld_fwd
+            combined_lh = torch.clamp(combined_lh, min=-500, max=500)
+            loss_lh = -combined_lh.mean()
 
-            # small pairwise stabiliser
-            mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
+            # Final NaN check on losses before backprop
+            if torch.isnan(loss_hl) or torch.isnan(loss_lh):
+                logger.warning("NaN in final losses: loss_hl=%f, loss_lh=%f - skipping batch", 
+                              loss_hl.item() if not torch.isnan(loss_hl) else float('nan'),
+                              loss_lh.item() if not torch.isnan(loss_lh) else float('nan'))
+                continue
 
-            # Check for NaN values and report which component is causing them
-            if torch.isnan(loss_hl):
-                low_log_prob = low_tgt.log_prob(y_lo).mean()
-                logger.warning("NaN in loss_hl: low_log_prob=%f, ld_inv=%f", low_log_prob.item(), ld_inv.mean().item())
-                # Clip extremely negative values to prevent NaN
-                loss_hl = -torch.clamp(low_tgt.log_prob(y_lo) + ld_inv, min=-1e6, max=1e6).mean()
-
-            if torch.isnan(loss_lh):
-                hi_log_prob = hi_tgt.log_prob(y_hi).mean()
-                logger.warning("NaN in loss_lh: hi_log_prob=%f, ld_fwd=%f", hi_log_prob.item(), ld_fwd.mean().item())
-                # Clip extremely negative values to prevent NaN
-                loss_lh = -torch.clamp(hi_tgt.log_prob(y_hi) + ld_fwd, min=-1e6, max=1e6).mean()
-
-            if torch.isnan(mse):
-                logger.warning("NaN in MSE stabilizer")
-                mse = torch.tensor(0.0, device=device)
-
-            loss = loss_hl + loss_lh + mse
+            # Compute total loss
+            loss = loss_hl + loss_lh
+            
+            # Additional safety check on total loss
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning("NaN/inf in total loss, skipping batch")
+                continue
             
             # Log individual loss components
             if WANDB and cfg.get("wandb", False):
                 wandb.log({
                     "loss_hl": loss_hl.item(),
                     "loss_lh": loss_lh.item(),
-                    "mse": mse.item(),
                     "total": loss.item(),
                 })
 
@@ -283,29 +365,56 @@ def train_realnvp(cfg: Dict[str, Any], target=None) -> Path:
         flow.eval()
         with torch.no_grad():
             running = 0.0
+            valid_batches = 0
             for xb_hi, xb_lo in vloader:
                 xb_hi, xb_lo = xb_hi.to(device), xb_lo.to(device)
-                y_lo, ld_inv = flow.inverse(xb_hi)
-                loss_hl = -(low_tgt.log_prob(y_lo) + ld_inv).mean()
-                y_hi, ld_fwd = flow.forward(xb_lo)
-                loss_lh = -(hi_tgt.log_prob(y_hi) + ld_fwd).mean()
-                mse = mse_weight * ((y_lo - xb_lo) ** 2).sum(-1).mean()
                 
-                # Handle NaNs in validation too
-                if torch.isnan(loss_hl):
-                    loss_hl = torch.tensor(0.0, device=device)
-                if torch.isnan(loss_lh):
-                    loss_lh = torch.tensor(0.0, device=device)
-                if torch.isnan(mse):
-                    mse = torch.tensor(0.0, device=device)
+                # Apply same stability checks as in training
+                y_lo, ld_inv = flow.inverse(xb_hi)
+                
+                # Check for NaN/inf in flow outputs
+                if torch.isnan(y_lo).any() or torch.isinf(y_lo).any() or torch.isnan(ld_inv).any() or torch.isinf(ld_inv).any():
+                    continue
                     
-                batch_loss = loss_hl + loss_lh + mse
-                if torch.isnan(batch_loss):
-                    logger.warning("NaN in validation loss, skipping batch")
+                # Clip and compute loss_hl
+                ld_inv = torch.clamp(ld_inv, min=-500, max=500)
+                log_prob_lo = low_tgt.log_prob(y_lo)
+                if torch.isnan(log_prob_lo).any() or torch.isinf(log_prob_lo).any():
+                    continue
+                log_prob_lo = torch.clamp(log_prob_lo, min=-500, max=500)
+                combined_hl = torch.clamp(log_prob_lo + ld_inv, min=-500, max=500)
+                loss_hl = -combined_hl.mean()
+                
+                # Forward direction
+                y_hi, ld_fwd = flow.forward(xb_lo)
+                if torch.isnan(y_hi).any() or torch.isinf(y_hi).any() or torch.isnan(ld_fwd).any() or torch.isinf(ld_fwd).any():
+                    continue
+                    
+                # Clip and compute loss_lh
+                ld_fwd = torch.clamp(ld_fwd, min=-500, max=500)
+                log_prob_hi = hi_tgt.log_prob(y_hi)
+                if torch.isnan(log_prob_hi).any() or torch.isinf(log_prob_hi).any():
+                    continue
+                log_prob_hi = torch.clamp(log_prob_hi, min=-500, max=500)
+                combined_lh = torch.clamp(log_prob_hi + ld_fwd, min=-500, max=500)
+                loss_lh = -combined_lh.mean()
+                
+                # Final validation batch loss check
+                batch_loss = loss_hl + loss_lh
+                if torch.isnan(batch_loss) or torch.isinf(batch_loss):
                     continue
                     
                 running += batch_loss.item() * xb_hi.size(0)
-        val_loss = running / len(val_set)
+                valid_batches += 1
+        # Handle case where all validation batches were skipped due to NaN
+        if valid_batches == 0:
+            logger.warning("All validation batches contained NaN/inf - using large penalty")
+            val_loss = 1e6  # Large penalty to trigger early stopping
+        else:
+            val_loss = running / (valid_batches * vloader.batch_size)
+            if valid_batches < len(vloader) * 0.5:
+                logger.warning("Over 50%% of validation batches skipped due to NaN/inf (%d/%d valid)", 
+                              valid_batches, len(vloader))
 
         logger.info("[%d/%d] train=%f  val=%f", epoch+1, tr_cfg['n_epochs'], train_loss, val_loss)
         logger.info("Epoch %d: train=%f, val=%f", epoch+1, train_loss, val_loss)

@@ -25,7 +25,7 @@ import yaml
 from src.accelmd.utils.config import load_config, build_local_kernel, build_swap_kernel
 from src.accelmd.models import MODEL_REGISTRY
 from src.accelmd.trainers.realnvp import train_realnvp  # keep for registry
-from src.accelmd.trainers.tarflow import train_tarflow  # new backend
+# from src.accelmd.trainers.tarflow import train_tarflow  # new backend
 from src.accelmd.evaluators import swap_rate
 from src.accelmd.metrics import (
     acceptance_autocorrelation,
@@ -35,12 +35,10 @@ from src.accelmd.targets import build_target
 
 # Import plot generation scripts
 from scripts.generate_bidirectional_plots import generate_bidirectional_plot
-from scripts.generate_ramachandran_plots import EnhancedRamachandranPlotter
 
 # Unified trainer registry for dynamic backend selection
 TRAINER_REGISTRY = {
-    "realnvp": train_realnvp,
-    "tarflow": train_tarflow,
+    "realnvp": train_realnvp
 }
 
 # --------------------------------------------------------------------------- #
@@ -205,37 +203,9 @@ def _evaluate(cfg: Dict[str, Any]):
     # -- 4) Generate experiment-specific plots -------------------------------
     experiment_type = cfg.get("experiment_type", "gmm")
     
-    if experiment_type == "aldp" and plots_config.get("ramachandran_comparison", True):
-        # Generate Ramachandran plots for ALDP experiments
-        _LOG.info("Generating enhanced Ramachandran comparison plots for ALDP experiment")
-        try:
-            device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
-            t_low = float(cfg["pt"]["temp_low"])
-            t_high = float(cfg["pt"]["temp_high"])
-            
-            flow_model_path = Path(cfg["output"]["model_path"])
-            ramachandran_output_dir = Path(cfg["output"]["plots_dir"]) / "ramachandran_comparison"
-            
-            if flow_model_path.exists():
-                # Initialize enhanced plotter
-                plotter = EnhancedRamachandranPlotter(cfg)
-                
-                # Build target
-                target = build_target(cfg, device)
-                
-                # Generate enhanced plots
-                plot_file, validation = plotter.generate_comparison_plot(
-                    target, t_low, t_high, str(flow_model_path), ramachandran_output_dir
-                )
-                
-                _LOG.info("Enhanced Ramachandran comparison plots generated successfully: %s", plot_file)
-                _LOG.info("Validation results: %s", validation)
-            else:
-                _LOG.warning(f"Flow model not found at {flow_model_path}. Skipping Ramachandran plots.")
-                
-        except Exception as e:
-            _LOG.error(f"Failed to generate enhanced Ramachandran plots: {str(e)}")
-            _LOG.warning("Continuing without Ramachandran plots...")
+    if experiment_type == "aldp":
+        # ALDP-specific plots removed as requested (Ramachandran plots were not working)
+        _LOG.info("ALDP experiment detected - Ramachandran plots removed as requested")
     
     elif experiment_type == "gmm":
         _LOG.info("GMM experiment detected - bidirectional plots already generated during training")

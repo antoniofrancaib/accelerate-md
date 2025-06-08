@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 from src.accelmd.kernels.local.langevin import Langevin
 from src.accelmd.kernels.swap.vanilla import VanillaSwap
 from src.accelmd.kernels.swap.realnvp import RealNVPSwap
-from src.accelmd.kernels.swap.tarflow import TarFlowSwap
+# from src.accelmd.kernels.swap.tarflow import TarFlowSwap  # Not implemented yet
 
 
 def _substitute_variables(config: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -221,47 +221,13 @@ def build_swap_kernel(cfg: Dict[str, Any]) -> Optional[Any]:
                 return VanillaSwap()
             return None
     
-    elif kernel_type == "tarflow":
-        flow_checkpoint = kernel_cfg.get("flow_checkpoint")
-        
-        # If checkpoint path not explicitly set or still contains template variables, 
-        # generate it dynamically from current temperature pair
-        if not flow_checkpoint or "${" in str(flow_checkpoint):
-            name = cfg.get("name", "experiment")
-            t_low = cfg.get("pt", {}).get("temp_low", 1.0)
-            t_high = cfg.get("pt", {}).get("temp_high", 2.0)
-            flow_checkpoint = f"outputs/{name}/models/flow_{t_low:.2f}_{t_high:.2f}.pt"
-            logging.getLogger(__name__).info(f"Auto-generated flow checkpoint path: {flow_checkpoint}")
-        
-        if not flow_checkpoint:
-            logging.getLogger(__name__).warning("TarFlow swap kernel requires flow_checkpoint")
-            if kernel_cfg.get("fallback_to_vanilla", False):
-                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
-                return VanillaSwap()
-            return None
-            
-        checkpoint_path = Path(flow_checkpoint)
-        if not checkpoint_path.exists():
-            if kernel_cfg.get("fallback_to_vanilla", False):
-                logging.getLogger(__name__).warning(
-                    f"Flow checkpoint not found: {checkpoint_path}. Falling back to vanilla swap."
-                )
-                return VanillaSwap()
-            else:
-                logging.getLogger(__name__).warning(f"Flow checkpoint not found: {checkpoint_path}")
-                return None
-        
-        try:
-            return TarFlowSwap(
-                flow_checkpoint=checkpoint_path,
-                device=device
-            )
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Failed to load TarFlow swap kernel: {e}")
-            if kernel_cfg.get("fallback_to_vanilla", False):
-                logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
-                return VanillaSwap()
-            return None
+    # elif kernel_type == "tarflow":
+    #     # TarFlow swap kernel not implemented yet
+    #     logging.getLogger(__name__).warning("TarFlow swap kernel not implemented yet")
+    #     if kernel_cfg.get("fallback_to_vanilla", False):
+    #         logging.getLogger(__name__).info("Falling back to vanilla swap kernel")
+    #         return VanillaSwap()
+    #     return None
     
     else:
         logging.getLogger(__name__).warning(f"Unknown swap kernel type: {kernel_type}")
@@ -381,6 +347,7 @@ def _process_unified_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "experiment_type": experiment_type,  # Preserve experiment_type
         "device": cfg.get("device", "cuda"),
         "model_type": cfg.get("model_type", "realnvp"),
+        "pt_data_path": cfg.get("pt_data_path"),  # Preserve PT data path
         "pt": cfg.get("pt", {}),
         "trainer": cfg.get("trainer", {}),
         "evaluation": cfg.get("evaluation", {}),
