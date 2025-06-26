@@ -1,383 +1,220 @@
-#!/usr/bin/env python
-"""
-Unified entry-point for the GMM ⇆ RealNVP experiments.
+#!/usr/bin/env python3
+"""Command-line entry point for training PT swap flows.
 
-Flags
------
---train       Train the RealNVP flow (and dump the bidirectional-scatter sanity plot)
---evaluate    Run swap-rate evaluation + all metrics/plots
---run-all     Do both, in that order
-
-Example
--------
-python main.py --config configs/gmm.yaml --run-all
+Example usage:
+    python main.py --config configs/aldp.yaml --temp-pair 0 1 --epochs 1
 """
 
 from __future__ import annotations
-import argparse, logging, shutil, json, copy, sys
+
+import argparse
+import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Tuple
+import re
 
 import torch
-import yaml
+from torch.utils.data import DataLoader
 
-# ---- project imports --------------------------------------------------------
-from src.accelmd.utils.config import load_config, build_local_kernel, build_swap_kernel
-from src.accelmd.models import MODEL_REGISTRY
-from src.accelmd.trainers.realnvp import train_realnvp  # keep for registry
-# from src.accelmd.trainers.tarflow import train_tarflow  # new backend
-from src.accelmd.evaluators import swap_rate
-from src.accelmd.metrics import (
-    acceptance_autocorrelation,
-    moving_average_acceptance,
-)
-from src.accelmd.targets import build_target
-
-# Import plot generation scripts
-from scripts.generate_bidirectional_plots import generate_bidirectional_plot
-
-# Unified trainer registry for dynamic backend selection
-TRAINER_REGISTRY = {
-    "realnvp": train_realnvp
-}
-
-# --------------------------------------------------------------------------- #
-#                          small internal helpers                             #
-# --------------------------------------------------------------------------- #
-_LOG = logging.getLogger(__name__)
+from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config
+from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
+from src.accelmd.flows.pt_swap_flow import PTSwapFlow
+from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
+from src.accelmd.targets.aldp_boltzmann import AldpBoltzmann
+from src.accelmd.training.trainer import PTSwapTrainer
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TRAIN
-# ─────────────────────────────────────────────────────────────────────────────
-def _train(cfg: Dict[str, Any], target):
-    """Run training (if not already cached)."""
-    _LOG.info("Starting training phase")
-    
-    # The checkpoint path is now consistent with what trainers produce
-    ckpt_expected = Path(cfg["output"]["model_path"])
+def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None = None):
+    base_cfg = load_config(cfg_path)
+    if epochs_override is not None:
+        base_cfg["training"]["num_epochs"] = epochs_override
+    device = setup_device(base_cfg)
 
-    if ckpt_expected.is_file():
-        _LOG.info("Model checkpoint already present – skipping training.")
-        _LOG.info("Using existing model checkpoint: %s", ckpt_expected)
+    from src.accelmd.utils.config import create_run_config
+    cfg = create_run_config(base_cfg, pair, device)
+
+    # Dataset & loaders
+    dataset = PTTemperaturePairDataset(
+        pt_data_path=cfg["data"]["pt_data_path"],
+        molecular_data_path=cfg["data"]["molecular_data_path"],
+        temp_pair=pair,
+        subsample_rate=cfg["data"].get("subsample_rate", 100),
+        device="cpu",  # keep on CPU; trainer moves to GPU if needed
+    )
+    val_split = 0.1
+    val_size = int(len(dataset)*val_split)
+    train_size = len(dataset) - val_size
+    train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+    loader_train = DataLoader(
+        train_ds,
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=True,
+        collate_fn=PTTemperaturePairDataset.collate_fn,
+    )
+    loader_val = DataLoader(
+        val_ds,
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=False,
+        collate_fn=PTTemperaturePairDataset.collate_fn,
+    )
+
+    # Model
+    model_cfg = cfg["model"]
+    temps = cfg["temperatures"]["values"]
+    sys_cfg = cfg.get("system", {})
+    energy_cut = sys_cfg.get("energy_cut")
+    energy_max = sys_cfg.get("energy_max")
+    model = PTSwapFlow(
+        num_atoms=model_cfg["num_atoms"],
+        num_layers=model_cfg["flow_layers"],
+        hidden_dim=model_cfg["hidden_dim"],
+        source_temperature=temps[pair[0]],
+        target_temperature=temps[pair[1]],
+        target_kwargs={
+            "energy_cut": float(energy_cut) if energy_cut is not None else None,
+            "energy_max": float(energy_max) if energy_max is not None else None,
+        },
+        device=device,
+    )
+
+    trainer = PTSwapTrainer(
+        model=model,
+        train_loader=loader_train,
+        val_loader=loader_val,
+        config=cfg,
+        temp_pair=pair,
+        device=device,
+    )
+    summary = trainer.train()
+    print(json.dumps(summary, indent=2))
+
+    # Return path to best checkpoint for downstream evaluation
+    models_dir = Path(cfg["output"]["pair_dir"]) / "models"
+    best_ckpts = list(models_dir.glob("best_model_epoch*.pt"))
+
+    def _epoch_from_filename(path: Path) -> int:
+        """Extract integer epoch number from a checkpoint filename.
+        Returns -1 if pattern not found so those files rank last.
+        """
+        match = re.search(r"epoch(\d+)", path.stem)
+        return int(match.group(1)) if match else -1
+
+    best_ckpt = max(best_ckpts, key=_epoch_from_filename, default=None)
+    return best_ckpt
+
+
+def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_samples: int, save_metrics: bool = True):
+    base_cfg = load_config(cfg_path)
+    device = setup_device(base_cfg)
+
+    cfg = create_run_config(base_cfg, pair, device)
+
+    # Dataset & DataLoader (no split needed for evaluation)
+    dataset = PTTemperaturePairDataset(
+        pt_data_path=cfg["data"]["pt_data_path"],
+        molecular_data_path=cfg["data"]["molecular_data_path"],
+        temp_pair=pair,
+        subsample_rate=cfg["data"].get("subsample_rate", 100),
+        device="cpu",
+    )
+    batch_size = cfg["training"].get("batch_size", 64)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=PTTemperaturePairDataset.collate_fn,
+    )
+
+    # Build flow model & load checkpoint
+    model_cfg = cfg["model"]
+    temps = cfg["temperatures"]["values"]
+    sys_cfg = cfg.get("system", {})
+    energy_cut = sys_cfg.get("energy_cut")
+    energy_max = sys_cfg.get("energy_max")
+    model = PTSwapFlow(
+        num_atoms=model_cfg["num_atoms"],
+        num_layers=model_cfg["flow_layers"],
+        hidden_dim=model_cfg["hidden_dim"],
+        source_temperature=temps[pair[0]],
+        target_temperature=temps[pair[1]],
+        target_kwargs={
+            "energy_cut": float(energy_cut) if energy_cut is not None else None,
+            "energy_max": float(energy_max) if energy_max is not None else None,
+        },
+        device=device,
+    )
+    state_dict = torch.load(checkpoint, map_location=device)
+    model.load_state_dict(state_dict)
+
+    # Boltzmann bases (cpu)
+    base_low = AldpBoltzmann(temperature=temps[pair[0]])
+    base_high = AldpBoltzmann(temperature=temps[pair[1]])
+
+    # Limit number of batches to cover roughly num_samples
+    max_batches = (num_samples + batch_size - 1) // batch_size
+
+    naive_acc = naive_acceptance(loader, base_low, base_high, max_batches=max_batches)
+    flow_acc = flow_acceptance(loader, model, base_low, base_high, device=device, max_batches=max_batches)
+
+    print("\nSwap acceptance estimate (pair %s ↔ %s, %d samples)" % (pair[0], pair[1], num_samples))
+    print("    naïve swap : %.4f" % naive_acc)
+    print("    flow swap  : %.4f" % flow_acc)
+
+    if save_metrics:
+        metrics_dir = Path(cfg["output"]["pair_dir"]) / "metrics"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        out_path = metrics_dir / "swap_acceptance.json"
+        with open(out_path, "w") as fh:
+            json.dump({
+                "naive_acceptance": naive_acc,
+                "flow_acceptance": flow_acc,
+                "num_samples": num_samples
+            }, fh, indent=2)
+        print(f"Metrics saved to {out_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/aldp.yaml")
+    parser.add_argument("--temp-pair", nargs=2, type=int, help="Indices of temperature pair to train")
+    parser.add_argument("--epochs", type=int, help="Override epochs for quick tests")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate swap acceptance instead of training")
+    parser.add_argument("--checkpoint", type=str, help="Path to model checkpoint for evaluation")
+    parser.add_argument("--num-eval-samples", type=int, default=20000, help="Number of evaluation samples")
+    args = parser.parse_args()
+
+    if args.evaluate:
+        if not args.checkpoint or not args.temp_pair:
+            raise ValueError("--checkpoint and --temp-pair are required with --evaluate")
+        pair = tuple(args.temp_pair)
+        evaluate_pair(args.config, pair, args.checkpoint, num_samples=args.num_eval_samples, save_metrics=False)
+        return
+
+    # ------------------------------------------------------------------
+    # Copy the YAML config once per invocation into the experiment outputs
+    # directory for provenance.
+    base_cfg = load_config(args.config)
+    base_dir = Path(base_cfg["output"]["base_dir"]).expanduser()
+    exp_dir = base_dir / base_cfg["experiment_name"]
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    cfg_copy_path = exp_dir / "used_config.yaml"
+    if not cfg_copy_path.exists():
+        import shutil
+        shutil.copy(args.config, cfg_copy_path)
+
+    if args.temp_pair:
+        pair = tuple(args.temp_pair)
+        ckpt_path = train_pair(args.config, pair, epochs_override=args.epochs)
+        if ckpt_path is not None:
+            evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
     else:
-        _LOG.info("No checkpoint found at %s, running training...", ckpt_expected)
-        trainer = TRAINER_REGISTRY[cfg.get("model_type", "realnvp")]
-        ckpt_path = trainer(cfg, target)  # does the heavy lifting
-        # No need to copy - trainer saves directly to the right location
-        _LOG.info("Training completed, checkpoint saved to %s", ckpt_path)
-
-    # Generate training loss plot if enabled
-    plots_config = cfg.get("plots_and_metrics", {})
-    if plots_config.get("training_loss", True):
-        _LOG.info("Generating training loss plot")
-        try:
-            from scripts.generate_training_plots import generate_training_loss_plot
-            
-            history_path = Path(cfg["output"]["training_history"])
-            plots_dir = Path(cfg["output"]["plots_dir"])
-            
-            # Generate a meaningful suffix for the plot
-            t_low = cfg["pt"].get("temp_low", "low")
-            t_high = cfg["pt"].get("temp_high", "high") 
-            suffix = f"{t_low:.2f}_{t_high:.2f}"
-            
-            output_path = plots_dir / f"training_loss_{suffix}.png"
-            
-            if history_path.exists():
-                generate_training_loss_plot(history_path, output_path)
-                _LOG.info("Training loss plot generated successfully")
-            else:
-                _LOG.warning(f"Training history not found at {history_path}. Skipping training loss plot.")
-                
-        except Exception as e:
-            _LOG.error(f"Failed to generate training loss plot: {str(e)}")
-            _LOG.warning("Continuing without training loss plot...")
-
-    # Generate plots based on experiment type
-    experiment_type = cfg.get("experiment_type", "gmm")
-    plots_dir = Path(cfg["output"]["plots_dir"])
-    
-    if experiment_type == "gmm" and plots_config.get("bidirectional_verification", True):
-        # Generate bidirectional verification plot for GMM experiments
-        _LOG.info("Generating bidirectional verification plot for GMM experiment")
-        generate_bidirectional_plot(
-            cfg,
-            ckpt_expected,
-            plots_dir,
-        )
-        _LOG.info("Bidirectional verification plot generated")
-    elif experiment_type == "aldp":
-        # For ALDP experiments, plots will be generated during evaluation
-        _LOG.info("ALDP experiment detected - Ramachandran plots will be generated during evaluation")
-    else:
-        _LOG.warning(f"Unknown experiment type: {experiment_type}. No plots generated during training.")
-
-    _LOG.info("Training phase completed")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# EVALUATE
-# ─────────────────────────────────────────────────────────────────────────────
-def _evaluate(cfg: Dict[str, Any]):
-    """Run swap-rate + metrics and produce outputs."""
-    _LOG.info("Starting evaluation phase")
-    
-    # Get plot/metrics configuration
-    plots_config = cfg.get("plots_and_metrics", {})
-    
-    # Build kernels for the evaluation phase
-    _LOG.info("Building kernel interfaces...")
-    local_kernel = build_local_kernel(cfg)
-    swap_kernel = build_swap_kernel(cfg)
-    
-    if local_kernel and swap_kernel:
-        _LOG.info("Using new kernel interfaces for evaluation")
-        # Store kernels in config for evaluators to use
-        cfg["_kernels"] = {
-            "local": local_kernel,
-            "swap": swap_kernel
-        }
-    else:
-        _LOG.info("Using legacy evaluation path (no kernel interfaces)")
-    
-    # -- 1) swap-rate (produces JSON summary) -------------------------------
-    if plots_config.get("swap_rate_evaluation", True):
-        _LOG.info("Running swap-rate evaluation")
-        swap_rate.run(cfg)
-        _LOG.info("Swap-rate evaluation completed")
-    else:
-        _LOG.info("Swap-rate evaluation disabled by configuration")
-
-    # -- 2) legacy metrics (two extra PNGs) ---------------------------------
-    if plots_config.get("acceptance_autocorrelation", True):
-        _LOG.info("Running acceptance autocorrelation metric")
-        acceptance_autocorrelation.run(cfg)
-        _LOG.info("Acceptance autocorrelation completed")
-    else:
-        _LOG.info("Acceptance autocorrelation disabled by configuration")
-        
-    if plots_config.get("moving_average_acceptance", True):
-        _LOG.info("Running moving average acceptance metric")
-        moving_average_acceptance.run(cfg)
-        _LOG.info("Moving average acceptance completed")
-    else:
-        _LOG.info("Moving average acceptance disabled by configuration")
-
-    # -- 3) enhanced sampling metrics (vanilla vs flow comparison) ----------
-    enhanced_metrics_enabled = any([
-        plots_config.get("autocorrelation_comparison", True),
-        plots_config.get("effective_sample_size_comparison", True),
-        plots_config.get("round_trip_exploration", True)
-    ])
-    
-    if enhanced_metrics_enabled:
-        _LOG.info("Running enhanced sampling evaluation metrics")
-        try:
-            # Import metrics modules
-            from src.accelmd.metrics import integrated_autocorr_time
-            from src.accelmd.metrics import effective_sample_size  
-            from src.accelmd.metrics import round_trip_time
-            
-            # Run enhanced sampling metrics based on config
-            if plots_config.get("autocorrelation_comparison", True):
-                _LOG.info("Running integrated autocorrelation time analysis")
-                integrated_autocorr_time.run(cfg)
-            
-            if plots_config.get("effective_sample_size_comparison", True):
-                _LOG.info("Running effective sample size analysis")
-                effective_sample_size.run(cfg)
-            
-            if plots_config.get("round_trip_exploration", True):
-                _LOG.info("Running round-trip time and exploration analysis")
-                round_trip_time.run(cfg)
-            
-            _LOG.info("Enhanced sampling metrics completed successfully")
-            
-        except Exception as e:
-            _LOG.warning("Enhanced sampling metrics failed: %s", str(e))
-            _LOG.warning("Continuing with basic evaluation...")
-    else:
-        _LOG.info("Enhanced sampling metrics disabled by configuration")
-
-    # -- 4) Generate experiment-specific plots -------------------------------
-    experiment_type = cfg.get("experiment_type", "gmm")
-    
-    if experiment_type == "aldp":
-        # ALDP-specific plots removed as requested (Ramachandran plots were not working)
-        _LOG.info("ALDP experiment detected - Ramachandran plots removed as requested")
-    
-    elif experiment_type == "gmm":
-        _LOG.info("GMM experiment detected - bidirectional plots already generated during training")
-    
-    else:
-        _LOG.warning(f"Unknown experiment type: {experiment_type}. No additional plots generated.")
-
-    # Metrics are now stored directly at the expected location via template
-    _LOG.info("Metrics calculated → %s", cfg["output"]["metric_json"])
-    _LOG.info("Evaluation phase completed")
-
-
-# --------------------------------------------------------------------------- #
-#                                     CLI                                     #
-# --------------------------------------------------------------------------- #
-def configure_logging(log_file):
-    """Configure root logger to write to both file and console."""
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    
-    # Clear any existing handlers
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-        
-    # Create handlers
-    file_handler = logging.FileHandler(log_file, mode="w")
-    console_handler = logging.StreamHandler(sys.stdout)
-    
-    # Create formatter and add to handlers
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Add handlers to logger
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
-    return root_logger
-
-
-def main() -> None:
-    p = argparse.ArgumentParser(description="Altan RealNVP ⇆ GMM driver")
-    p.add_argument("--config", type=str, required=True,
-                   help="Path to experiment YAML (e.g. configs/gmm.yaml)")
-    p.add_argument("--train",   action="store_true",
-                   help="Train a RealNVP model")
-    p.add_argument("--evaluate", action="store_true",
-                   help="Evaluate model and generate plots")
-    p.add_argument("--run-all", action="store_true",
-                   help="Do both training and evaluation")
-    p.add_argument("--cpu", action="store_true",
-                   help="Force CPU usage even if GPU is available")
-    p.add_argument("--use-legacy-kernels", action="store_true",
-                   help="Force use of legacy kernel implementation")
-    args = p.parse_args()
-
-    if not (args.train or args.evaluate or args.run_all):
-        p.error("Please specify --train, --evaluate or --run-all.")
-
-    # First, load the config to get the log file path
-    _LOG.info("Loading config from %s", args.config)
-    cfg = load_config(args.config)
-    
-    # Override kernel usage if requested
-    if args.use_legacy_kernels:
-        _LOG.info("Legacy kernel mode forced by command line argument")
-        cfg.pop("local_kernel", None)
-        cfg.pop("swap_kernel", None)
-    
-    # ─── START experiment dir & logging setup ───
-    name = cfg.get("name") or Path(args.config).stem
-    # derive_output_paths already put <outputs>/<n> in base_dir
-    exp_dir = Path(cfg["output"]["base_dir"])
-
-    # Standard sub-directories (models ≡ checkpoints, metrics ≡ results)
-    models_dir   = exp_dir / "models"
-    metrics_dir  = exp_dir / "metrics"
-    plots_dir    = exp_dir / "plots"
-
-    for d in (models_dir, metrics_dir, plots_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    # Copy original YAML once (over-write if re-run)
-    shutil.copy(args.config, exp_dir / "config.yaml")
-    
-    # Configure root logging
-    log_file = exp_dir / "experiment.log"
-    configure_logging(log_file)
-    # ─── END experiment dir & logging setup ───
-    
-    _LOG.info("Experiment directory: %s", exp_dir)
-    
-    # Configure logging to write to both file and console
-    # This will update the root logger, affecting all modules
-    _LOG.info("Loaded config:\n%s", yaml.dump(cfg, sort_keys=False))
-    
-    _LOG.info("Running with options: train=%s, evaluate=%s, run-all=%s", 
-              args.train, args.evaluate, args.run_all)
-    
-    # Use CPU if explicitly requested
-    if args.cpu:
-        device = torch.device("cpu")
-        # Override config device for all downstream code
-        cfg["device"] = "cpu"
-    else:
-        device = torch.device(cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
-    
-    if args.run_all:
-        temps = cfg["pt"]["temperatures"]
-        for i in range(len(temps) - 1):
-            t_low, t_high = temps[i], temps[i + 1]
-
-            # ---- per-pair cfg tweaks -------------------------------------
-            suffix = f"{t_low:.2f}_{t_high:.2f}"
-            cfg["pt"].update({"temp_low": t_low, "temp_high": t_high})
-
-            # unified directories
-            cfg["output"].update({
-                "checkpoints": str(models_dir),  # for trainer backward-compat
-                "model_path": str(models_dir / f"flow_{suffix}.pt"),
-                "training_history": str(models_dir / f"training_history_{suffix}.json"),
-                "plots_dir": str(plots_dir),
-                "results_dir": str(metrics_dir),
-                "metric_template": f"swap_rate_flow_{suffix}.json",
-                "metric_json": str(metrics_dir / f"swap_rate_flow_{suffix}.json"),
-            })
-
-            # ---- TRAIN ---------------------------------------------------
-            if args.train or args.run_all:
-                _LOG.info("=== Pair %s: Training ===", suffix)
-                target = build_target(cfg, device)
-                _train(cfg, target)
-
-            # ---- EVALUATE -----------------------------------------------
-            if args.evaluate or args.run_all:
-                _LOG.info("=== Pair %s: Evaluating ===", suffix)
-                _evaluate(cfg)
-            
-    elif args.train or args.evaluate:
-        # Re-enter the loop with run_all=False so we honour the flags
-        temps = cfg["pt"]["temperatures"]
-        for i in range(len(temps) - 1):
-            t_low, t_high = temps[i], temps[i + 1]
-            suffix = f"{t_low:.2f}_{t_high:.2f}"
-
-            cfg["pt"].update({"temp_low": t_low, "temp_high": t_high})
-            cfg["output"].update({
-                "checkpoints": str(models_dir),
-                "model_path": str(models_dir / f"flow_{suffix}.pt"),
-                "training_history": str(models_dir / f"training_history_{suffix}.json"),
-                "plots_dir": str(plots_dir),
-                "results_dir": str(metrics_dir),
-                "metric_template": f"swap_rate_flow_{suffix}.json",
-                "metric_json": str(metrics_dir / f"swap_rate_flow_{suffix}.json"),
-            })
-
-            if args.train:
-                _LOG.info("=== Pair %s: Training-only ===", suffix)
-                target = build_target(cfg, device)
-                _train(cfg, target)
-
-            if args.evaluate:
-                _LOG.info("=== Pair %s: Evaluation-only ===", suffix)
-                _evaluate(cfg)
-    
-    _LOG.info("Experiment completed successfully")
+        cfg = load_config(args.config)
+        for pair in get_temperature_pairs(cfg):
+            ckpt_path = train_pair(args.config, tuple(pair), epochs_override=args.epochs)
+            if ckpt_path is not None:
+                evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
 
 
 if __name__ == "__main__":
-    # Set up basic logging before config is loaded
-    logging.basicConfig(level=logging.INFO, 
-                        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-                        handlers=[logging.StreamHandler()])
-    
     main()

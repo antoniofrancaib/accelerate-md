@@ -1,0 +1,63 @@
+experiment_name: "aldp_swap_flows"
+
+# Device selection: "auto" | "cpu" | "cuda"
+# Use "auto" to prefer GPU if available.
+device: "auto"
+
+# Temperature ladder (must match the PT dataset)
+temperatures:
+  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+
+# Adjacent temperature pairs to train
+temperature_pairs:
+  - [0, 1]
+  - [1, 2]
+  - [2, 3]
+  - [3, 4]
+
+# Data configuration
+data:
+  pt_data_path: "data/pt/pt_aldp_cart_full.pt"
+  molecular_data_path: "data/pt/train.h5"  # topology + bonds + atom types
+  subsample_rate: 100
+
+# Model hyper-parameters - LARGER CAPACITY
+model:
+  num_atoms: 22
+  embedding_dim: 64  # 2x larger embedding
+  flow_layers: 12    # 50% more coupling layers
+  hidden_dim: 512    # 2x larger hidden layers
+  use_attention: false  # Phase 2 feature toggle
+
+# Training hyper-parameters
+training:
+  batch_size: 64  # Smaller batch due to larger model
+  learning_rate: 0.0001
+  num_epochs: 300
+  val_split: 0.1
+  early_stopping_patience: 200
+  clip_grad_norm: 5.0
+  high_energy_threshold: 100000000.0   # slightly more permissive; log shows if batches get fully clipped
+  # Acceptance-weight schedule (constant, stronger)
+  warmup_epochs: 50  # linearly ramp auxiliary losses for 50 epochs
+  recon_weight_start: 1.0
+  recon_weight_end: 0.0
+  acc_weight_start: 0.1  # start very small – let NLL dominate first
+  acc_weight_end: 2.0     # original final weight
+  min_lr: 0.00005
+  lr_factor: 0.3
+  lr_patience: 2
+
+# Output directories
+output:
+  base_dir: "outputs"
+
+# Supervisor-provided system parameters (for AldpBoltzmann)
+system:
+  temperature: 300.0
+  energy_cut: 1.0e8
+  energy_max: 1.0e20
+  n_threads: 64
+  transform: cartesian 
+  shift_dih: false
+  env: implicit 
