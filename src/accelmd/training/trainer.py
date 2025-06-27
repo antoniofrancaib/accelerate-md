@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 
 from .losses import bidirectional_nll
 from .acceptance_loss import acceptance_loss
+from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config, get_energy_threshold
 
 __all__ = ["PTSwapTrainer"]
 
@@ -37,7 +38,7 @@ class PTSwapTrainer:
             self.model.parameters(), lr=config["training"]["learning_rate"]
         )
         self.clip_grad_norm = config["training"].get("clip_grad_norm", 1.0)
-        self.energy_threshold = config["training"].get("high_energy_threshold", None)
+        self.energy_threshold = get_energy_threshold(config)
 
         # ------------------------------------------------------------------
         # Loss-component weights

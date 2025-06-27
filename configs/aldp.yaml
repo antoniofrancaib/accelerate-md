@@ -33,11 +33,10 @@ model:
 training:
   batch_size: 64  # Smaller batch due to larger model
   learning_rate: 0.0001
-  num_epochs: 300
+  num_epochs: 2000
   val_split: 0.1
   early_stopping_patience: 200
   clip_grad_norm: 5.0
-  high_energy_threshold: 100000000.0   # slightly more permissive; log shows if batches get fully clipped
   # Acceptance-weight schedule (constant, stronger)
   warmup_epochs: 50  # linearly ramp auxiliary losses for 50 epochs
   recon_weight_start: 1.0

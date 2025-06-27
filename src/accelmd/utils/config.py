@@ -15,6 +15,8 @@ __all__ = [
     "get_data_config",
     "get_training_config",
     "create_run_config",
+    "get_energy_threshold",
+    "set_openmm_threads",
 ]
 
 
@@ -50,6 +52,10 @@ def load_config(path: str) -> Dict[str, Any]:
         cfg: Dict[str, Any] = yaml.safe_load(fh)
 
     cfg["_config_path"] = os.path.abspath(path)
+
+    # Apply system-level environment tweaks (e.g. OpenMM CPU thread count)
+    set_openmm_threads(cfg)
+
     return cfg
 
 
@@ -153,4 +159,32 @@ def create_run_config(cfg: Dict[str, Any], pair: Tuple[int, int], device: str) -
 def print_config_summary(cfg: Dict[str, Any]) -> None:
     import pprint
     print("\nCONFIG SUMMARY\n--------------")
-    pprint.pprint({k: v for k, v in cfg.items() if not k.startswith("_")}) 
+    pprint.pprint({k: v for k, v in cfg.items() if not k.startswith("_")})
+
+
+# -----------------------------------------------------------------------------
+# System helpers (energy threshold, OpenMM env)
+# -----------------------------------------------------------------------------
+
+def get_energy_threshold(cfg: Dict[str, Any]) -> float | None:
+    """Return a global energy threshold for batch clipping.
+
+    Priority order:
+    1. `system.energy_max` if present.
+    2. `system.energy_cut` as fallback.
+    Returns `None` if neither key exists.
+    """
+    sys_cfg = cfg.get("system", {})
+    if sys_cfg.get("energy_max") is not None:
+        return float(sys_cfg["energy_max"])
+    if sys_cfg.get("energy_cut") is not None:
+        return float(sys_cfg["energy_cut"])
+    return None
+
+
+def set_openmm_threads(cfg: Dict[str, Any]):
+    """Set OPENMM_CPU_THREADS env var if `system.n_threads` is configured."""
+    sys_cfg = cfg.get("system", {})
+    n_threads = sys_cfg.get("n_threads")
+    if n_threads is not None and n_threads > 0:
+        os.environ.setdefault("OPENMM_CPU_THREADS", str(int(n_threads))) 
