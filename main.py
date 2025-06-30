@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Tuple
 import re
+import subprocess
 
 import torch
 from torch.utils.data import DataLoader
@@ -93,14 +94,12 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
     models_dir = Path(cfg["output"]["pair_dir"]) / "models"
     best_ckpts = list(models_dir.glob("best_model_epoch*.pt"))
 
-    def _epoch_from_filename(path: Path) -> int:
-        """Extract integer epoch number from a checkpoint filename.
-        Returns -1 if pattern not found so those files rank last.
-        """
-        match = re.search(r"epoch(\d+)", path.stem)
-        return int(match.group(1)) if match else -1
+    if not best_ckpts:
+        return None
 
-    best_ckpt = max(best_ckpts, key=_epoch_from_filename, default=None)
+    # The trainer saves a checkpoint *each time* validation loss improves, so
+    # the **latest modified file** corresponds to the global best model.
+    best_ckpt = max(best_ckpts, key=lambda p: p.stat().st_mtime)
     return best_ckpt
 
 
@@ -174,6 +173,35 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
         print(f"Metrics saved to {out_path}")
 
 
+def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
+    """Generate 2×2 Ramachandran grid for the given pair using the helper script.
+
+    The plot is saved under <pair_dir>/plots/rama_grid.png where *pair_dir* is
+    dictated by `create_run_config` in utils.config.
+    """
+    base_cfg = load_config(cfg_path)
+    run_cfg = create_run_config(base_cfg, pair, device="cpu")
+    plots_dir = Path(run_cfg["output"]["pair_dir"]).expanduser() / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    out_path = plots_dir / "rama_grid.png"
+
+    cmd = [
+        "python",
+        "scripts/plot_rama_grid.py",
+        "--config", cfg_path,
+        "--checkpoint", str(checkpoint),
+        "--temp-pair", str(pair[0]), str(pair[1]),
+        "--n-samples", "20000",
+        "--out", str(out_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[WARN] Ramachandran plot generation failed for pair {pair}: {e}")
+    else:
+        print(f"Ramachandran plot saved to {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/aldp.yaml")
@@ -189,6 +217,7 @@ def main():
             raise ValueError("--checkpoint and --temp-pair are required with --evaluate")
         pair = tuple(args.temp_pair)
         evaluate_pair(args.config, pair, args.checkpoint, num_samples=args.num_eval_samples, save_metrics=False)
+        _generate_rama_plot(args.config, pair, args.checkpoint)
         return
 
     # ------------------------------------------------------------------
@@ -208,12 +237,14 @@ def main():
         ckpt_path = train_pair(args.config, pair, epochs_override=args.epochs)
         if ckpt_path is not None:
             evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
+            _generate_rama_plot(args.config, tuple(pair), str(ckpt_path))
     else:
         cfg = load_config(args.config)
         for pair in get_temperature_pairs(cfg):
             ckpt_path = train_pair(args.config, tuple(pair), epochs_override=args.epochs)
             if ckpt_path is not None:
                 evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
+                _generate_rama_plot(args.config, tuple(pair), str(ckpt_path))
 
 
 if __name__ == "__main__":

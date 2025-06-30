@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4           # CPU cores per task
 #SBATCH --gres=gpu:1                # Request 1 GPU
-#SBATCH --time=12:00:00             # 12-hour wall-time
+#SBATCH --time=24:00:00             # 12-hour wall-time
 #SBATCH --output=logs/pt_swap_flows_%j.out
 #SBATCH --error=logs/pt_swap_flows_%j.err
 #SBATCH -p ampere                   # CSD3 GPU partition

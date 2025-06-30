@@ -44,34 +44,34 @@ sbatch run_experiment.sh
 python main.py --run-all --config configs/experiment.yaml
 ```
 
-**Expected output structure**
+**Expected output structure (v0)**
 
-For n temperatures (n = len(temperatures)), the  is:
+Each *temperature pair* gets its own sub-directory so that checkpoints and
+metrics stay neatly isolated.  For a ladder with *n* temperatures (n−1 pairs)
+you will see:
 
 ```bash
 outputs/<experiment_name>/
-├── config.yaml
-├── experiment.log
-├── models/
-│   ├── flow_<T0>_<T1>.pt
-│   ├── flow_<T1>_<T2>.pt
-│   └── … (n−1 files)
-├── metrics/
-│   ├── swap_rate_flow_<T0>_<T1>.json
-│   ├── swap_rate_flow_<T1>_<T2>.json
-│   └── … (n−1 files)
-└── plots/
-    ├── bidirectional_verification_<T0>_<T1>.png
-    ├── bidirectional_verification_<T1>_<T2>.png
-    ├── ...
-    ├── acceptance_autocorrelation_<T0>_<T1>.png
-    ├── acceptance_autocorrelation_<T1>_<T2>.png
-    ├── ...
-    ├── moving_average_acceptance_<T0>_<T1>.png
-    ├── moving_average_acceptance_<T1>_<T2>.png
-    ├── ...
-    └── … num_metrics*(n−1 files)
+├── used_config.yaml            # copy of the YAML used for the run (provenance)
+├── pair_0_1/                   # adjacent-pair index, not absolute Kelvin
+│   ├── models/
+│   │   ├── best_model_epoch12.pt
+│   │   ├── best_model_epoch26.pt
+│   │   └── … (one file per new best checkpoint)
+│   ├── metrics/
+│   │   └── swap_acceptance.json        # naïve vs flow acceptance numbers
+│   └── plots/
+│       ├── loss_curve.png              # train/val loss over epochs
+│       └── clipping_fraction.png       # fraction of batches hitting sentinel loss
+├── pair_1_2/
+│   └── … (same structure as above)
+├── pair_2_3/
+│   └── …
+└── … (n−1 directories total)
 ```
+
+If you train non-adjacent pairs or use a universal flow, the directory names
+will follow the same `pair_i_j` pattern but with your custom indices.
 
 ## Unified Configuration System
 

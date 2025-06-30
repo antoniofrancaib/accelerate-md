@@ -9,7 +9,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from .losses import bidirectional_nll
-from .acceptance_loss import acceptance_loss
 from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config, get_energy_threshold
 
 __all__ = ["PTSwapTrainer"]
@@ -100,16 +99,16 @@ class PTSwapTrainer:
             # Compute current β (NLL weight) via geometric schedule.
             beta = self._current_nll_weight(epoch)
 
-            train_loss, train_nll, train_acc, train_clip_frac = self._run_epoch(
+            train_loss, train_nll_f, train_nll_r, train_acc, train_clip_frac = self._run_epoch(
                 self.train_loader, training=True
             )
-            val_loss, val_nll, val_acc, val_clip_frac = self._run_epoch(
+            val_loss, val_nll_f, val_nll_r, val_acc, val_clip_frac = self._run_epoch(
                 self.val_loader, training=False
             )
 
             print(
-                f"Epoch {epoch:03d} | loss {train_loss:.3e} (nll {train_nll:.3e} | acc {train_acc:.3e}) "
-                f"| val_loss {val_loss:.3e} (nll {val_nll:.3e} | acc {val_acc:.3e})"
+                f"Epoch {epoch:03d} | loss {train_loss:.3e} (nll_f {train_nll_f:.3e} | nll_r {train_nll_r:.3e} | acc {train_acc:.3e}) "
+                f"| val_loss {val_loss:.3e} (nll_f {val_nll_f:.3e} | nll_r {val_nll_r:.3e} | acc {val_acc:.3e})"
             )
 
             train_hist.append(train_loss)
@@ -118,13 +117,13 @@ class PTSwapTrainer:
             clip_val_hist.append(val_clip_frac)
 
             # ----------------------------------------------------------
-            # β-aware early-stopping:  before warm-up finishes we monitor the
-            # total loss; afterwards we switch to the *un-weighted* NLL so
-            # reconstruction-weight changes don't fool the criterion.
-            if epoch >= self.warmup_epochs:
-                early_metric = val_acc
-            else:
-                early_metric = val_loss
+            # Early-stopping / LR-scheduler metric: always use the *total*
+            # validation loss.  Previously we switched to the acceptance-loss
+            # after warm-up, which caused best checkpoints to ignore better
+            # overall fits.  Simpler and more transparent to monitor one
+            # scalar throughout training.
+
+            early_metric = val_loss
 
             # Save checkpoint whenever metric strictly improves
             if early_metric < self.best_metric:
@@ -136,6 +135,23 @@ class PTSwapTrainer:
 
             # LR scheduler monitors the same metric as early stopping
             self.lr_scheduler.step(early_metric)
+
+            # ----------------------------------------------------------
+            # NEW: log|det J| statistics (mean ± std) – computed **once**
+            # per epoch on a single validation batch to avoid the costly
+            # extra forward/inverse passes inside every mini-batch.
+            # ----------------------------------------------------------
+            with torch.no_grad():
+                det_batch = next(iter(self.val_loader))
+                det_batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in det_batch.items()}
+
+                _, ld_f = self.model.forward(det_batch["source_coords"])
+                _, ld_inv = self.model.inverse(det_batch["target_coords"])
+
+                ld_vals = torch.cat([ld_f.flatten(), ld_inv.flatten()])
+                ld_mean = ld_vals.mean().item()
+                ld_std = ld_vals.std().item()
+                print(f"    [epoch {epoch:03d}] log|det J| mean={ld_mean:.3f} ± {ld_std:.3f}")
 
         hours = (time.time() - start_time) / 3600.0
 
@@ -183,11 +199,12 @@ class PTSwapTrainer:
     def _run_epoch(self, loader: DataLoader, training: bool) -> tuple[float, float, float, float]:
         self.model.train(mode=training)
         total_loss = 0.0
-        nll_sum = 0.0
+        nll_f_sum = 0.0
+        nll_r_sum = 0.0
         acc_sum = 0.0
-        log_det_stats = []  # for monitoring
         n_batches = 0
         clipped_batches = 0
+        n_samples = 0
         for batch in loader:
             # Move tensors to device (only coords present for now)
             batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}
@@ -198,83 +215,56 @@ class PTSwapTrainer:
             # --------------------------------------------------------------
 
             with torch.set_grad_enabled(training):
-                nll_loss = bidirectional_nll(
+                nll_total, nll_forward, nll_reverse = bidirectional_nll(
                     self.model,
                     batch,
                     energy_threshold=self.energy_threshold,
+                    return_components=True,
                 )
 
-                # Acceptance loss (Δ clamped only during very early epochs?)
-                kB = 0.00831446261815324
-                if "temperatures" in self.cfg:
-                    temps = self.cfg["temperatures"]["values"]
-                    T_low = temps[self.temp_pair[0]]
-                    T_high = temps[self.temp_pair[1]]
-                    beta_low = 1.0 / (kB * T_low)
-                    beta_high = 1.0 / (kB * T_high)
-                else:
-                    beta_low = beta_high = 1.0
+                # Acceptance-loss removed; use zero placeholder to keep API unchanged
+                acc_loss = torch.tensor(0.0, device=self.device)
 
-                acc_loss = acceptance_loss(
-                    self.model,
-                    batch,
-                    beta_low=beta_low,
-                    beta_high=beta_high,
-                    clamp=True,
-                    energy_threshold=self.energy_threshold,
-                )
-
-            # Current λ_acc schedule
-            epoch_idx = self._current_epoch
-            lambda_acc = self._interp(self.acc_weight_start, self.acc_weight_end, epoch_idx)
-
-            loss = nll_loss + lambda_acc * acc_loss
+            # Acceptance term disabled – total loss is pure NLL
+            total = nll_total
 
             if training:
                 self.optimizer.zero_grad()
-                loss.backward()
+                total.backward()
                 # Gradient clipping for stability
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 self.optimizer.step()
 
-            batch_loss_val = loss.item()
-            total_loss += batch_loss_val
-            nll_sum += nll_loss.item()
-            acc_sum += acc_loss.item()
+            B = batch["source_coords"].shape[0]
+            n_samples += B
+
+            batch_loss_val = total.item()
+
+            # Accumulate *per-sample* sums so we can average correctly.
+            total_loss += batch_loss_val * B
+            nll_f_sum += nll_forward.item() * B
+            nll_r_sum += nll_reverse.item() * B
+            acc_sum += acc_loss.item() * B
 
             # Detect sentinel clipping constant (≈1e4) rather than any large loss
             sentinel = 1e4
             tol = 1e-3
             if (
                 abs(batch_loss_val - sentinel) < tol
-                or abs(nll_loss.item() - sentinel) < tol
+                or abs(nll_total.item() - sentinel) < tol
                 or abs(acc_loss.item() - sentinel) < tol
             ):
                 clipped_batches += 1
 
-            # ---------------- log-det monitoring ----------------
-            with torch.no_grad():
-                src = batch["source_coords"].to(self.device)
-                tgt = batch["target_coords"].to(self.device)
-                _, ld_f = self.model.forward(src)
-                _, ld_inv = self.model.inverse(tgt)
-                log_det_stats.append(ld_f.mean().item())
-                log_det_stats.append(ld_inv.mean().item())
-
             n_batches += 1
-        mean_total = total_loss / max(1, n_batches)
-        mean_nll = nll_sum / max(1, n_batches)
-        mean_acc = acc_sum / max(1, n_batches)
+        mean_total = total_loss / max(1, n_samples)
+        mean_nll_f = nll_f_sum / max(1, n_samples)
+        mean_nll_r = nll_r_sum / max(1, n_samples)
+        mean_acc = acc_sum / max(1, n_samples)
 
         clip_fraction = clipped_batches / max(1, n_batches)
 
-        if training and log_det_stats:
-            import numpy as np
-            ld_mean = float(np.mean(log_det_stats))
-            ld_std = float(np.std(log_det_stats))
-            print(f"    [epoch {self._current_epoch:03d}] log|det J| mean={ld_mean:.3f} ± {ld_std:.3f}")
-
-        return mean_total, mean_nll, mean_acc, clip_fraction
+        return mean_total, mean_nll_f, mean_nll_r, mean_acc, clip_fraction
 
     # ------------------------------------------------------------------
     def _save_checkpoint(self, epoch: int):

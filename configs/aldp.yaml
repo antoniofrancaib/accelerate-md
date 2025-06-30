@@ -1,4 +1,4 @@
-experiment_name: "aldp_swap_flows"
+experiment_name: "aldp_swap_flows_shorter_run"
 
 # Device selection: "auto" | "cpu" | "cuda"
 # Use "auto" to prefer GPU if available.
@@ -25,7 +25,7 @@ data:
 model:
   num_atoms: 22
   embedding_dim: 64  # 2x larger embedding
-  flow_layers: 12    # 50% more coupling layers
+  flow_layers: 8    # 50% more coupling layers
   hidden_dim: 512    # 2x larger hidden layers
   use_attention: false  # Phase 2 feature toggle
 
@@ -33,16 +33,13 @@ model:
 training:
   batch_size: 64  # Smaller batch due to larger model
   learning_rate: 0.0001
-  num_epochs: 2000
+  num_epochs: 200
   val_split: 0.1
   early_stopping_patience: 200
   clip_grad_norm: 5.0
-  # Acceptance-weight schedule (constant, stronger)
-  warmup_epochs: 50  # linearly ramp auxiliary losses for 50 epochs
-  recon_weight_start: 1.0
-  recon_weight_end: 0.0
-  acc_weight_start: 0.1  # start very small – let NLL dominate first
-  acc_weight_end: 2.0     # original final weight
+  warmup_epochs: 0  # no auxiliary schedules when using pure NLL
+  acc_weight_start: 0.0  # disable acceptance term
+  acc_weight_end: 0.0
   min_lr: 0.00005
   lr_factor: 0.3
   lr_patience: 2
@@ -54,8 +51,8 @@ output:
 # Supervisor-provided system parameters (for AldpBoltzmann)
 system:
   temperature: 300.0
-  energy_cut: 1.0e8
-  energy_max: 1.0e20
+  energy_cut: 1.0e8 
+  energy_max: 1.0e20 
   n_threads: 64
   transform: cartesian 
   shift_dih: false
