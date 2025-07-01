@@ -35,6 +35,8 @@ class PTSwapFlow(nn.Module):
         Lower temperature of the pair.
     target_temperature
         Higher temperature of the pair.
+    target_name
+        Name of the target Boltzmann base.
     target_kwargs
         Additional keyword arguments for building the Boltzmann bases.
     device
@@ -48,6 +50,7 @@ class PTSwapFlow(nn.Module):
         hidden_dim: int = 256,
         source_temperature: float = 1.0,
         target_temperature: float = 1.5,
+        target_name: str = "aldp",
         target_kwargs: dict | None = None,
         device: str = "cpu",
     ) -> None:
@@ -67,8 +70,8 @@ class PTSwapFlow(nn.Module):
 
         # Boltzmann priors for each temperature (for likelihood later)
         target_kwargs = target_kwargs or {}
-        self.base_low = build_target("aldp", temperature=source_temperature, device="cpu", **target_kwargs)
-        self.base_high = build_target("aldp", temperature=target_temperature, device="cpu", **target_kwargs)
+        self.base_low = build_target(target_name, temperature=source_temperature, device="cpu", **target_kwargs)
+        self.base_high = build_target(target_name, temperature=target_temperature, device="cpu", **target_kwargs)
 
     # ------------------------------------------------------------------
     # Core forward / reverse operations

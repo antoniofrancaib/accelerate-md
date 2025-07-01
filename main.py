@@ -66,16 +66,21 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
     sys_cfg = cfg.get("system", {})
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
+    target_cfg = cfg.get("target", {})
+    target_kwargs_extra = target_cfg.get("kwargs", {})
+    target_kwargs_extra.update({
+        "energy_cut": float(energy_cut) if energy_cut is not None else None,
+        "energy_max": float(energy_max) if energy_max is not None else None,
+    })
+
     model = PTSwapFlow(
         num_atoms=model_cfg["num_atoms"],
         num_layers=model_cfg["flow_layers"],
         hidden_dim=model_cfg["hidden_dim"],
         source_temperature=temps[pair[0]],
         target_temperature=temps[pair[1]],
-        target_kwargs={
-            "energy_cut": float(energy_cut) if energy_cut is not None else None,
-            "energy_max": float(energy_max) if energy_max is not None else None,
-        },
+        target_name=target_cfg.get("name", "aldp"),
+        target_kwargs=target_kwargs_extra,
         device=device,
     )
 
@@ -131,16 +136,21 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
     sys_cfg = cfg.get("system", {})
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
+    target_cfg = cfg.get("target", {})
+    target_kwargs_extra = target_cfg.get("kwargs", {})
+    target_kwargs_extra.update({
+        "energy_cut": float(energy_cut) if energy_cut is not None else None,
+        "energy_max": float(energy_max) if energy_max is not None else None,
+    })
+
     model = PTSwapFlow(
         num_atoms=model_cfg["num_atoms"],
         num_layers=model_cfg["flow_layers"],
         hidden_dim=model_cfg["hidden_dim"],
         source_temperature=temps[pair[0]],
         target_temperature=temps[pair[1]],
-        target_kwargs={
-            "energy_cut": float(energy_cut) if energy_cut is not None else None,
-            "energy_max": float(energy_max) if energy_max is not None else None,
-        },
+        target_name=target_cfg.get("name", "aldp"),
+        target_kwargs=target_kwargs_extra,
         device=device,
     )
     state_dict = torch.load(checkpoint, map_location=device)

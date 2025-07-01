@@ -53,6 +53,12 @@ def load_config(path: str) -> Dict[str, Any]:
 
     cfg["_config_path"] = os.path.abspath(path)
 
+    # ------------------------------------------------------------------
+    # Auto-fill dataset paths & model.num_atoms from `peptide_code`
+    # ------------------------------------------------------------------
+    if "peptide_code" in cfg:
+        _autofill_from_peptide(cfg)
+
     # Apply system-level environment tweaks (e.g. OpenMM CPU thread count)
     set_openmm_threads(cfg)
 
@@ -187,4 +193,46 @@ def set_openmm_threads(cfg: Dict[str, Any]):
     sys_cfg = cfg.get("system", {})
     n_threads = sys_cfg.get("n_threads")
     if n_threads is not None and n_threads > 0:
-        os.environ.setdefault("OPENMM_CPU_THREADS", str(int(n_threads))) 
+        os.environ.setdefault("OPENMM_CPU_THREADS", str(int(n_threads)))
+
+
+# -----------------------------------------------------------------------------
+# Peptide helper – infer paths & atom count
+# -----------------------------------------------------------------------------
+
+def _autofill_from_peptide(cfg: Dict[str, Any]):
+    """Populate data paths and `model.num_atoms` given `cfg['peptide_code']`."""
+    code = cfg["peptide_code"].strip()
+    base_dir = f"data/pt_dipeptides/{code}"
+
+    data_cfg = cfg.setdefault("data", {})
+    data_cfg.setdefault("pt_data_path", f"{base_dir}/pt_{code}.pt")
+    data_cfg.setdefault("molecular_data_path", base_dir)
+
+    # Infer atom count if not set in model section.
+    model_cfg = cfg.setdefault("model", {})
+    atom_file = Path(base_dir) / "atom_types.pt"
+    try:
+        import torch
+        if atom_file.is_file():
+            atom_types = torch.load(atom_file, map_location="cpu")
+            n_atoms = int(atom_types.shape[0])
+            if model_cfg.get("num_atoms") != n_atoms:
+                model_cfg["num_atoms"] = n_atoms
+    except Exception:  # pragma: no cover – fallback silently
+        pass
+
+    # ------------------------------------------------------------------
+    # Target defaults – Aldp for AX; generic dipeptide otherwise.
+    # ------------------------------------------------------------------
+    target_cfg = cfg.setdefault("target", {})
+    if "name" not in target_cfg:
+        if code.upper() == "AX":
+            target_cfg["name"] = "aldp"
+        else:
+            target_cfg["name"] = "dipeptide"
+            # All peptides reside in the 2AA-1-big dataset directory.
+            pdb_guess = f"data/timewarp/2AA-1-big/train/{code}-traj-state0.pdb"
+            target_cfg.setdefault("kwargs", {})
+            target_cfg["kwargs"].setdefault("pdb_path", pdb_guess)
+            target_cfg["kwargs"].setdefault("env", "implicit") 

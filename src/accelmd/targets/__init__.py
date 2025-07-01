@@ -21,7 +21,7 @@ def build_target(name: str, *args, **kwargs):
 # Ensure key targets are registered on import
 from importlib import import_module
 
-for _mod in [".aldp_boltzmann"]:
+for _mod in [".aldp_boltzmann", ".dipeptide_potential"]:
     try:
         import_module(_mod, package=__name__)
     except ModuleNotFoundError:

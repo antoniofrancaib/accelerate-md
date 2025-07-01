@@ -1,0 +1,21 @@
+experiment_name: "dipeptide_pt_generation"
+
+# Device used for PT simulation (auto/cpu/cuda)
+device: "cuda"
+
+# Environment for OpenMM target (implicit solvent instead of vacuum)
+env: "implicit"
+
+# Temperature ladder for PT (explicit values to match ALDP config)
+temperatures:
+  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+
+# OpenMM platform (Reference|CPU|CUDA)
+openmm_platform: "CUDA"
+
+pt:
+  num_chains: 10         # chains per replica
+  swap_interval: 50      # Langevin steps between replica‐exchange attempts
+  step_size: 1e-4        # Langevin step size
+  num_steps: 1000000        # total PT iterations per peptide
+  temp_schedule: explicit  # explicit means we pass the list above 

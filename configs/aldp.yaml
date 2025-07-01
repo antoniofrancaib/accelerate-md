@@ -1,8 +1,11 @@
-experiment_name: "aldp_swap_flows_shorter_run"
+experiment_name: "AA_swap_flows_run"
 
 # Device selection: "auto" | "cpu" | "cuda"
 # Use "auto" to prefer GPU if available.
 device: "auto"
+
+# Peptide to train on (two-letter code); auto-fills data paths.
+peptide_code: AF
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
@@ -15,10 +18,9 @@ temperature_pairs:
   - [2, 3]
   - [3, 4]
 
-# Data configuration
+# Data section – paths will be filled automatically from `peptide_code` unless
+# explicitly overridden.
 data:
-  pt_data_path: "data/pt/pt_aldp_cart_full.pt"
-  molecular_data_path: "data/pt/train.h5"  # topology + bonds + atom types
   subsample_rate: 100
 
 # Model hyper-parameters - LARGER CAPACITY
@@ -33,7 +35,7 @@ model:
 training:
   batch_size: 64  # Smaller batch due to larger model
   learning_rate: 0.0001
-  num_epochs: 200
+  num_epochs: 600
   val_split: 0.1
   early_stopping_patience: 200
   clip_grad_norm: 5.0
