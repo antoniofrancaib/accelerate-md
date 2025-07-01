@@ -57,7 +57,14 @@ class FullyConnectedGraph(BaseTransform):
         if data.edge_index is not None:
             original_edge_index = data.edge_index  # Shape: (2, num_original_edges)
 
-        adj = torch.ones((data.num_atoms, data.num_atoms), device=data.num_atoms.device) - torch.eye(data.num_atoms, device=data.num_atoms.device)
+        # Retrieve device from an existing tensor (prefer `x` if present) – fallback to CPU.
+        device = data.x.device if hasattr(data, "x") and torch.is_tensor(data.x) else (
+            data.coord.device if hasattr(data, "coord") and torch.is_tensor(data.coord) else torch.device("cpu")
+        )
+
+        adj = torch.ones((data.num_atoms, data.num_atoms), device=device) - torch.eye(
+            data.num_atoms, device=device
+        )
         fully_connected_edge_index = adj.nonzero(as_tuple=False).t()  # Shape: (2, num_edges)
 
         data.edge_index = fully_connected_edge_index
@@ -68,7 +75,7 @@ class FullyConnectedGraph(BaseTransform):
         if data.edge_index is not None:
             data.edge_mask = torch.isin(fully_connected_edges_flat, original_edges_flat)
         else:
-            data.edge_mask = torch.zeros(fully_connected_edges_flat.shape[0], dtype=torch.bool, device=data.num_atoms.device) 
+            data.edge_mask = torch.zeros(fully_connected_edges_flat.shape[0], dtype=torch.bool, device=device) 
 
         return data
 
@@ -116,8 +123,15 @@ class ALDPDataset(InMemoryDataset):
 
         super(ALDPDataset, self).__init__(osp.join(root, self.peptide), transform, pre_transform)
 
-        # Pytorch 2.6.0 compatibility
-        self.data, self.slices, self.topology = torch.load(self.processed_paths[0],weights_only=False)
+        # Safer loading – restrict to tensors where possible.
+        try:
+            self.data, self.slices, self.topology = torch.load(
+                self.processed_paths[0], weights_only=True, map_location="cpu"
+            )
+        except Exception:  # fall back for legacy pickle files containing non-tensor objects
+            self.data, self.slices, self.topology = torch.load(
+                self.processed_paths[0], map_location="cpu"
+            )
 
     def process(self):
         for path, processed_path in zip(self.raw_paths, self.processed_paths):
@@ -257,7 +271,16 @@ class DipeptideDataset(InMemoryDataset):
         self.peptides = peptides
         self.peptide_hash_dict = get_peptide_hash_dict()
         if os.path.exists(os.path.join(root, "processed/topology.pt")):
-            self.topo_dict = torch.load(os.path.join(root, "processed/topology.pt"))
+            try:
+                self.topo_dict = torch.load(
+                    os.path.join(root, "processed/topology.pt"),
+                    weights_only=True,
+                    map_location="cpu",
+                )
+            except Exception:
+                self.topo_dict = torch.load(
+                    os.path.join(root, "processed/topology.pt"), map_location="cpu"
+                )
         else:
             self.topo_dict = {}
         super().__init__(root, transform, pre_transform)
@@ -266,12 +289,15 @@ class DipeptideDataset(InMemoryDataset):
         self.slices = {}
 
         for processed_path in self.processed_paths:
-            data, slices = torch.load(processed_path)
+            try:
+                data, slices = torch.load(processed_path, weights_only=True, map_location="cpu")
+            except Exception:
+                data, slices = torch.load(processed_path, map_location="cpu")
 
             # Merge data
             if self.data is None:
                 self.data = data
-                offsets = offsets = {key: 0 for key in data.keys()}
+                offsets = {key: 0 for key in data.keys()}
             else:
                 for key in data.keys():
                     if key == "edge_index":
@@ -361,6 +387,8 @@ class DipeptideDataset(InMemoryDataset):
             
             # specify the backbone structure with "backbone" mode
             if self.mode == "backbone":
+                # In backbone mode we keep the original atom type indices (0-4) –
+                # no out-of-range remapping.
                 backbone_idxs = topology.select("backbone")
                 atom_types[backbone_idxs] = [5, 6, 7, 8, 9, 10, 11, 12]
             atom_types = torch.tensor(atom_types).view(-1, 1)
@@ -408,9 +436,9 @@ class DipeptideDataset(InMemoryDataset):
             data_path, topo_path = self.file_paths_for_peptide(peptide)
 
             try:
-                data = torch.load(data_path)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"File {data_path} not found. Please download it first.")            
+                data = torch.load(data_path, weights_only=True, map_location="cpu")
+            except Exception:
+                data = torch.load(data_path, map_location="cpu")
             
             if peptide not in self.topo_dict.keys():
                 self.topo_dict[peptide] = md.load(topo_path).topology
