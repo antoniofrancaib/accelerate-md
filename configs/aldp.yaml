@@ -27,11 +27,22 @@ data:
 
 # Model hyper-parameters - LARGER CAPACITY
 model:
+  # Architecture selection: "simple" (PTSwapFlow) or "graph" (PTSwapGraphFlow)
+  architecture: "simple"  # Options: "simple", "graph"
+  
   # num_atoms: dynamically determined from dataset (no longer hardcoded)
   embedding_dim: 64     # For future atom type embeddings and graph-aware features
   flow_layers: 8        # 50% more coupling layers
   hidden_dim: 512       # 2x larger hidden layers
   use_attention: false  # Enable when adding molecular attention
+  
+  # Graph-specific parameters (only used when architecture="graph")
+  graph:
+    atom_vocab_size: 4              # H, C, N, O
+    atom_embed_dim: 32              # Dimension of atom type embeddings
+    graph_embed_dim: 64             # Global graph embedding dimension (0 to disable)
+    node_feature_dim: 64            # Per-atom feature dimension
+    attention_lengthscales: [1.0, 2.0, 4.0]  # Multi-head attention scales
 
 # Training hyper-parameters
 training:

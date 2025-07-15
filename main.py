@@ -19,10 +19,55 @@ from torch.utils.data import DataLoader
 
 from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config
 from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
-from src.accelmd.flows.pt_swap_flow import PTSwapFlow
+from src.accelmd.flows import PTSwapFlow, PTSwapGraphFlow
 from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
 # from src.accelmd.targets.aldp_boltzmann import AldpBoltzmann  # Now using build_target
 from src.accelmd.training.trainer import PTSwapTrainer
+
+
+def build_model(model_cfg: dict, pair: Tuple[int, int], temps: list, target_name: str, 
+                target_kwargs: dict, device: str, num_atoms: int = None):
+    """Build either PTSwapFlow or PTSwapGraphFlow based on config architecture setting."""
+    
+    architecture = model_cfg.get("architecture", "simple")
+    
+    if architecture == "simple":
+        # Simple coordinate-to-coordinate flow
+        if num_atoms is None:
+            raise ValueError("num_atoms must be provided for simple architecture")
+            
+        return PTSwapFlow(
+            num_atoms=num_atoms,
+            num_layers=model_cfg["flow_layers"],
+            hidden_dim=model_cfg["hidden_dim"],
+            source_temperature=temps[pair[0]],
+            target_temperature=temps[pair[1]],
+            target_name=target_name,
+            target_kwargs=target_kwargs,
+            device=device,
+        )
+        
+    elif architecture == "graph":
+        # Graph-conditioned flow with molecular structure
+        graph_cfg = model_cfg.get("graph", {})
+        
+        return PTSwapGraphFlow(
+            num_layers=model_cfg["flow_layers"],
+            atom_vocab_size=graph_cfg.get("atom_vocab_size", 4),
+            atom_embed_dim=graph_cfg.get("atom_embed_dim", 32),
+            graph_embed_dim=graph_cfg.get("graph_embed_dim", 64),
+            node_feature_dim=graph_cfg.get("node_feature_dim", 64),
+            hidden_dim=model_cfg["hidden_dim"],
+            attention_lengthscales=graph_cfg.get("attention_lengthscales", [1.0, 2.0, 4.0]),
+            source_temperature=temps[pair[0]],
+            target_temperature=temps[pair[1]],
+            target_name=target_name,
+            target_kwargs=target_kwargs,
+            device=device,
+        )
+        
+    else:
+        raise ValueError(f"Unknown architecture: {architecture}. Must be 'simple' or 'graph'.")
 
 
 def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None = None):
@@ -97,15 +142,14 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         "energy_max": float(energy_max) if energy_max is not None else None,
     })
 
-    model = PTSwapFlow(
-        num_atoms=model_cfg["num_atoms"],  # Now uses dynamic value
-        num_layers=model_cfg["flow_layers"],
-        hidden_dim=model_cfg["hidden_dim"],
-        source_temperature=temps[pair[0]],
-        target_temperature=temps[pair[1]],
+    model = build_model(
+        model_cfg=model_cfg,
+        pair=pair,
+        temps=temps,
         target_name=target_name,  # Determined from peptide_code
         target_kwargs=target_kwargs_extra,
         device=device,
+        num_atoms=model_cfg["num_atoms"],  # Only used for simple architecture
     )
 
     trainer = PTSwapTrainer(
@@ -191,15 +235,14 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
         "energy_max": float(energy_max) if energy_max is not None else None,
     })
 
-    model = PTSwapFlow(
-        num_atoms=model_cfg["num_atoms"],  # Now uses dynamic value
-        num_layers=model_cfg["flow_layers"],
-        hidden_dim=model_cfg["hidden_dim"],
-        source_temperature=temps[pair[0]],
-        target_temperature=temps[pair[1]],
+    model = build_model(
+        model_cfg=model_cfg,
+        pair=pair,
+        temps=temps,
         target_name=target_name,  # Determined from peptide_code
         target_kwargs=target_kwargs_extra,
         device=device,
+        num_atoms=model_cfg["num_atoms"],  # Only used for simple architecture
     )
     state_dict = torch.load(checkpoint, map_location=device)
     model.load_state_dict(state_dict)

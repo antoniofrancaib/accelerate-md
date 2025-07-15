@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from ..layers.mlp import MLP
+from .mlp import MLP
 from .base_flow import FlowModule
 
 __all__ = ["PositionCouplingLayer", "create_alternating_masks"]

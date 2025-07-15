@@ -27,7 +27,7 @@ from typing import Iterable
 import torch
 from torch.utils.data import DataLoader
 
-from ..flows.pt_swap_flow import PTSwapFlow
+from ..flows import PTSwapFlow, PTSwapGraphFlow
 from ..targets.aldp_boltzmann import AldpBoltzmann
 
 __all__ = [
@@ -91,7 +91,7 @@ def naive_acceptance(
 @torch.no_grad()
 def flow_acceptance(
     loader: DataLoader,
-    model: PTSwapFlow,
+    model: PTSwapFlow | PTSwapGraphFlow,
     base_low: AldpBoltzmann,
     base_high: AldpBoltzmann,
     device: str = "cpu",
@@ -125,8 +125,43 @@ def flow_acceptance(
         x_high = batch["target_coords"].to(model_device)
 
         # Forward / inverse transforms + log‐dets
-        y_high, log_det_f = model.forward(x_low)           # low → high
-        y_low, log_det_inv = model.inverse(x_high)         # high → low
+        if isinstance(model, PTSwapGraphFlow):
+            # Graph-conditioned flow requires additional molecular data
+            atom_types = batch["atom_types"].to(model_device)
+            adj_list = batch.get("adj_list")
+            edge_batch_idx = batch.get("edge_batch_idx")
+            masked_elements = batch.get("masked_elements")
+            
+            if adj_list is not None:
+                adj_list = adj_list.to(model_device)
+            if edge_batch_idx is not None:
+                edge_batch_idx = edge_batch_idx.to(model_device)
+            if masked_elements is not None:
+                masked_elements = masked_elements.to(model_device)
+            
+            # Graph flow uses different interface
+            y_high, log_det_f = model.forward(
+                coordinates=x_low,
+                atom_types=atom_types,
+                adj_list=adj_list,
+                edge_batch_idx=edge_batch_idx,
+                masked_elements=masked_elements,
+                reverse=False
+            )  # low → high
+            
+            y_low, log_det_inv = model.forward(
+                coordinates=x_high,
+                atom_types=atom_types,
+                adj_list=adj_list,
+                edge_batch_idx=edge_batch_idx,
+                masked_elements=masked_elements,
+                reverse=True
+            )  # high → low
+            
+        else:
+            # Simple flow (PTSwapFlow)
+            y_high, log_det_f = model.forward(x_low)           # low → high
+            y_low, log_det_inv = model.inverse(x_high)         # high → low
 
         # Energies evaluated on CPU (OpenMM)
         y_high_flat = y_high.view(y_high.shape[0], -1).cpu()
