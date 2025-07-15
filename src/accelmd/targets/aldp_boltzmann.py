@@ -34,10 +34,7 @@ K_B_KJMOL = 0.00831446261815324
 
 @register_target("aldp")
 class AldpBoltzmann:
-    """Alanine Dipeptide Boltzmann distribution in vacuum (Cartesian, 66-D)."""
-
-    n_atoms: int = 22
-    dim: int = 66
+    """Alanine Dipeptide Boltzmann distribution in vacuum (Cartesian coordinates)."""
 
     def __init__(
         self,
@@ -45,6 +42,7 @@ class AldpBoltzmann:
         device: str = "cpu",
         energy_cut: float | None = None,
         energy_max: float | None = None,
+        **kwargs  # Accept and ignore extra parameters for compatibility
     ) -> None:
         self.T = float(temperature)
         self.beta = 1.0 / (K_B_KJMOL * self.T)  # dimensionless 1/(k_B T)
@@ -56,6 +54,10 @@ class AldpBoltzmann:
         testsys = testsystems.AlanineDipeptideVacuum(constraints=None)
         system = testsys.system
         topology = testsys.topology
+        
+        # Get number of atoms dynamically from the system
+        self.n_atoms = system.getNumParticles()
+        self.dim = self.n_atoms * 3
 
         # Use a dummy integrator – we only need energies.
         integrator = mm.VerletIntegrator(1.0 * unit.femtoseconds)

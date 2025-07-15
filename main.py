@@ -21,7 +21,7 @@ from src.accelmd.utils.config import load_config, setup_device, get_temperature_
 from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
 from src.accelmd.flows.pt_swap_flow import PTSwapFlow
 from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
-from src.accelmd.targets.aldp_boltzmann import AldpBoltzmann
+# from src.accelmd.targets.aldp_boltzmann import AldpBoltzmann  # Now using build_target
 from src.accelmd.training.trainer import PTSwapTrainer
 
 
@@ -41,7 +41,17 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         temp_pair=pair,
         subsample_rate=cfg["data"].get("subsample_rate", 100),
         device="cpu",  # keep on CPU; trainer moves to GPU if needed
+        filter_chirality=cfg["data"].get("filter_chirality", False),
+        center_coordinates=cfg["data"].get("center_coordinates", True),
     )
+    
+    # Extract num_atoms dynamically from the dataset
+    dynamic_num_atoms = dataset.source_coords.shape[1]  # [N, atoms, 3] -> atoms
+    print(f"Dynamically detected {dynamic_num_atoms} atoms from dataset")
+    
+    # Override config with actual num_atoms from data
+    cfg["model"]["num_atoms"] = dynamic_num_atoms
+    
     val_split = 0.1
     val_size = int(len(dataset)*val_split)
     train_size = len(dataset) - val_size
@@ -60,26 +70,40 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         collate_fn=PTTemperaturePairDataset.collate_fn,
     )
 
-    # Model
+    # Model - now uses dynamic num_atoms
     model_cfg = cfg["model"]
     temps = cfg["temperatures"]["values"]
     sys_cfg = cfg.get("system", {})
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
-    target_cfg = cfg.get("target", {})
-    target_kwargs_extra = target_cfg.get("kwargs", {})
+    
+    # Determine target based on peptide_code
+    peptide_code = cfg["peptide_code"].upper()
+    if peptide_code == "AX":
+        target_name = "aldp"
+        target_kwargs_extra = {}
+    else:
+        target_name = "dipeptide"
+        # For dipeptide target, we need PDB path and environment
+        pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
+        target_kwargs_extra = {
+            "pdb_path": pdb_path,
+            "env": "implicit"
+        }
+    
+    # Add system-level energy parameters to target kwargs
     target_kwargs_extra.update({
         "energy_cut": float(energy_cut) if energy_cut is not None else None,
         "energy_max": float(energy_max) if energy_max is not None else None,
     })
 
     model = PTSwapFlow(
-        num_atoms=model_cfg["num_atoms"],
+        num_atoms=model_cfg["num_atoms"],  # Now uses dynamic value
         num_layers=model_cfg["flow_layers"],
         hidden_dim=model_cfg["hidden_dim"],
         source_temperature=temps[pair[0]],
         target_temperature=temps[pair[1]],
-        target_name=target_cfg.get("name", "aldp"),
+        target_name=target_name,  # Determined from peptide_code
         target_kwargs=target_kwargs_extra,
         device=device,
     )
@@ -121,7 +145,17 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
         temp_pair=pair,
         subsample_rate=cfg["data"].get("subsample_rate", 100),
         device="cpu",
+        filter_chirality=cfg["data"].get("filter_chirality", False),
+        center_coordinates=cfg["data"].get("center_coordinates", True),
     )
+    
+    # Extract num_atoms dynamically from the dataset
+    dynamic_num_atoms = dataset.source_coords.shape[1]  # [N, atoms, 3] -> atoms
+    print(f"Dynamically detected {dynamic_num_atoms} atoms from dataset")
+    
+    # Override config with actual num_atoms from data
+    cfg["model"]["num_atoms"] = dynamic_num_atoms
+    
     batch_size = cfg["training"].get("batch_size", 64)
     loader = DataLoader(
         dataset,
@@ -130,35 +164,56 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
         collate_fn=PTTemperaturePairDataset.collate_fn,
     )
 
-    # Build flow model & load checkpoint
+    # Build flow model & load checkpoint - now uses dynamic num_atoms
     model_cfg = cfg["model"]
     temps = cfg["temperatures"]["values"]
     sys_cfg = cfg.get("system", {})
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
-    target_cfg = cfg.get("target", {})
-    target_kwargs_extra = target_cfg.get("kwargs", {})
+    
+    # Determine target based on peptide_code
+    peptide_code = cfg["peptide_code"].upper()
+    if peptide_code == "AX":
+        target_name = "aldp"
+        target_kwargs_extra = {}
+    else:
+        target_name = "dipeptide"
+        # For dipeptide target, we need PDB path and environment
+        pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
+        target_kwargs_extra = {
+            "pdb_path": pdb_path,
+            "env": "implicit"
+        }
+    
+    # Add system-level energy parameters to target kwargs
     target_kwargs_extra.update({
         "energy_cut": float(energy_cut) if energy_cut is not None else None,
         "energy_max": float(energy_max) if energy_max is not None else None,
     })
 
     model = PTSwapFlow(
-        num_atoms=model_cfg["num_atoms"],
+        num_atoms=model_cfg["num_atoms"],  # Now uses dynamic value
         num_layers=model_cfg["flow_layers"],
         hidden_dim=model_cfg["hidden_dim"],
         source_temperature=temps[pair[0]],
         target_temperature=temps[pair[1]],
-        target_name=target_cfg.get("name", "aldp"),
+        target_name=target_name,  # Determined from peptide_code
         target_kwargs=target_kwargs_extra,
         device=device,
     )
     state_dict = torch.load(checkpoint, map_location=device)
     model.load_state_dict(state_dict)
 
-    # Boltzmann bases (cpu)
-    base_low = AldpBoltzmann(temperature=temps[pair[0]])
-    base_high = AldpBoltzmann(temperature=temps[pair[1]])
+    # Boltzmann bases (cpu) - use the same target type as the model
+    from src.accelmd.targets import build_target
+    target_kwargs = target_kwargs_extra.copy()
+    target_kwargs.update({
+        "energy_cut": float(energy_cut) if energy_cut is not None else None,
+        "energy_max": float(energy_max) if energy_max is not None else None,
+    })
+    
+    base_low = build_target(target_name, temperature=temps[pair[0]], device="cpu", **target_kwargs)
+    base_high = build_target(target_name, temperature=temps[pair[1]], device="cpu", **target_kwargs)
 
     # Limit number of batches to cover roughly num_samples
     max_batches = (num_samples + batch_size - 1) // batch_size

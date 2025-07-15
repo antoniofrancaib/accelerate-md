@@ -1,11 +1,11 @@
-experiment_name: "AX_swap_flows"
+experiment_name: "AK_swap_flows"
 
 # Device selection: "auto" | "cpu" | "cuda"
 # Use "auto" to prefer GPU if available.
 device: "auto"
 
 # Peptide to train on (two-letter code); auto-fills data paths.
-peptide_code: AX
+peptide_code: AK
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
@@ -28,9 +28,10 @@ data:
 # Model hyper-parameters - LARGER CAPACITY
 model:
   # num_atoms: dynamically determined from dataset (no longer hardcoded)
-  flow_layers: 8    # 50% more coupling layers
-  hidden_dim: 512    # 2x larger hidden layers
-  use_attention: false  
+  embedding_dim: 64     # For future atom type embeddings and graph-aware features
+  flow_layers: 8        # 50% more coupling layers
+  hidden_dim: 512       # 2x larger hidden layers
+  use_attention: false  # Enable when adding molecular attention
 
 # Training hyper-parameters
 training:
@@ -38,7 +39,7 @@ training:
   learning_rate: 0.0001
   num_epochs: 100
   val_split: 0.1
-  early_stopping_patience: 50
+  early_stopping_patience: 20
   clip_grad_norm: 5.0
   warmup_epochs: 0  # no auxiliary schedules when using pure NLL
   acc_weight_start: 0.0  # disable acceptance term
