@@ -21,7 +21,7 @@ temperature_pairs:
 # Data section – paths will be filled automatically from `peptide_code` unless
 # explicitly overridden.
 data:
-  subsample_rate: 1000
+  subsample_rate: 100
   filter_chirality: false
   center_coordinates: false
 
@@ -37,7 +37,7 @@ model:
 training:
   batch_size: 64  # Smaller batch due to larger model
   learning_rate: 0.0001
-  num_epochs: 100
+  num_epochs: 300
   val_split: 0.1
   early_stopping_patience: 20
   clip_grad_norm: 5.0

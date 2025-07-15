@@ -22,7 +22,6 @@ evaluate_flow.sh
 run_experiment.sh
 outputs/ 
 legacy/
-data/
 wandb/
 
 env/
