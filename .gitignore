@@ -42,3 +42,6 @@ venv/
 # Weights & Biases
 wandb/
 configs/wandb.yaml
+~/.cache/
+.cache/
+**/cache/
