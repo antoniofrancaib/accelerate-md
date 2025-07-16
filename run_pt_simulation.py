@@ -44,11 +44,18 @@ def main(config):
     elif config["temp_schedule"] == 'linear':
         all_temps = torch.linspace(config["temp_low"], config["temp_high"], config["total_n_temp"]).float().to(config["device"])
     """
-    Set up plot-saving path
+    Set up plot-saving paths for each temperature
     """
-    plot_path = f"{config['plot_fold']}/{config['name']}"
+    base_plot_path = f"{config['plot_fold']}/{config['name']}"
     os.makedirs(config["plot_fold"], exist_ok=True)
-    os.makedirs(plot_path, exist_ok=True)
+    os.makedirs(base_plot_path, exist_ok=True)
+    
+    # Create temperature-specific directories
+    temp_plot_paths = {}
+    for i, temp in enumerate(all_temps):
+        temp_dir = f"{base_plot_path}/{temp.item():.2f}"
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_plot_paths[i] = temp_dir
 
     target = DipeptidePotentialCart(
         pdb_path=f"datasets/timewarp/2AA-1-big/train/{config['name']}-traj-state0.pdb",
@@ -107,12 +114,17 @@ def main(config):
             os.makedirs(config["save_fold"], exist_ok=True)
             # Save full trajectory structure [temp, chain, step, coord] for checkpoints too
             torch.save(torch.stack(traj, dim=2).detach().cpu().float(), f"{config['save_fold']}/pt_{config['name']}.pt")
-            fig = eval_fn(
-                torch.stack(traj[-config["check_interval"]:], dim=2)[0].reshape(-1, dim).to(config["device"]),
-                f'{plot_path}/{i + 1}.png'
-            )
-            if wandb.run is not None:
-                wandb.log({"Rama-plots": wandb.Image(fig)}, step=i)
+            
+            # Generate plots for all temperatures
+            recent_traj = torch.stack(traj[-config["check_interval"]:], dim=2)
+            for temp_idx in range(config["total_n_temp"]):
+                fig = eval_fn(
+                    recent_traj[temp_idx].reshape(-1, dim).to(config["device"]),
+                    f'{temp_plot_paths[temp_idx]}/{i + 1}.png'
+                )
+                if wandb.run is not None:
+                    wandb.log({f"Rama-plots/T_{all_temps[temp_idx].item():.2f}": wandb.Image(fig)}, step=i)
+                plt.close(fig)  # Close figure to prevent memory leak
         if wandb.run is not None:
             for j in range(len(all_temps)):
                 wandb.log({f"acc_rates/{all_temps[j].item():.2f}": acc[j].item()}, step=i)
@@ -131,10 +143,10 @@ if __name__ == '__main__':
         "temp_high": 5.,
         "total_n_temp": 10,
         "num_chains": 10,
-        "num_steps": 100000, # number of steps for PT simulation
+        "num_steps": 1000, # number of steps for PT simulation
         "step_size": 0.0001, # step size of MCMC
         "swap_interval": 100, # how often to swap samples between different temperatures
-        "check_interval": 10000,  # how many steps to evaluate the samples
+        "check_interval": 100,  # how many steps to evaluate the samples
         "plot_fold": "plots",  # set where you save the plots
         "save_fold": "results",  # set where you save the results
         "use_wandb": False,
