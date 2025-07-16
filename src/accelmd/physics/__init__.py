@@ -1,1 +1,0 @@
-# New physics subpackage to expose differentiable OpenMM bridges 

@@ -94,7 +94,7 @@ class AldpBoltzmann:
         # The autograd bridge returns forces in the backward pass so gradients
         # flow through the Boltzmann log-density – crucial for an NLL loss.
 
-        from ..physics.openmm_bridge import compute_potential_energy  # local import to avoid heavy dependency at module level
+        from ..training.openmm_bridge import compute_potential_energy  # local import to avoid heavy dependency at module level
 
         coords_flat = coords.reshape(-1, self.dim)  # keep gradient tracking & device
         energies = compute_potential_energy(coords_flat).to(torch.double)  # kJ/mol, differentiable

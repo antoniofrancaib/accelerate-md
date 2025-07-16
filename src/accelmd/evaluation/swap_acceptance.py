@@ -22,13 +22,12 @@ underlying OpenMM context in :pyclass:`AldpBoltzmann` is CPU‐only.  The flow
 model may live on GPU; tensors are moved as needed.
 """
 
-from typing import Iterable
+from typing import Iterable, Any
 
 import torch
 from torch.utils.data import DataLoader
 
 from ..flows import PTSwapFlow, PTSwapGraphFlow
-from ..targets.aldp_boltzmann import AldpBoltzmann
 
 __all__ = [
     "naive_acceptance",
@@ -36,7 +35,7 @@ __all__ = [
 ]
 
 
-def _energy(target: AldpBoltzmann, coords: torch.Tensor) -> torch.Tensor:
+def _energy(target: Any, coords: torch.Tensor) -> torch.Tensor:
     """Return *potential* energy (kJ/mol) for a batch of coordinates."""
     log_p = target.log_prob(coords)  # −β U
     return (-log_p) / target.beta  # strip β factor -> U
@@ -45,8 +44,8 @@ def _energy(target: AldpBoltzmann, coords: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def naive_acceptance(
     loader: DataLoader,
-    base_low: AldpBoltzmann,
-    base_high: AldpBoltzmann,
+    base_low: Any,
+    base_high: Any,
     max_batches: int | None = None,
 ) -> float:
     """Estimate naïve swap‐acceptance rate over the given ``loader``.
@@ -92,8 +91,8 @@ def naive_acceptance(
 def flow_acceptance(
     loader: DataLoader,
     model: PTSwapFlow | PTSwapGraphFlow,
-    base_low: AldpBoltzmann,
-    base_high: AldpBoltzmann,
+    base_low: Any,
+    base_high: Any,
     device: str = "cpu",
     max_batches: int | None = None,
 ) -> float:

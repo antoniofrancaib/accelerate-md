@@ -59,9 +59,28 @@ training:
   lr_factor: 0.3
   lr_patience: 2
 
+  nll_start: 1.0
+  nll_end: 1.0
+  acc_start: 0.0
+  acc_end: 0.0
+
 # Logging options
 logging:
   level: INFO
   log_interval: 10
   save_model_checkpoints: true
   save_checkpoint_interval: 50 
+
+# Output directories
+output:
+  base_dir: "outputs"
+
+# Supervisor-provided system parameters (for AldpBoltzmann)
+system:
+  temperature: 300.0
+  energy_cut: 1.0e8 
+  energy_max: 1.0e20 
+  n_threads: 64
+  transform: cartesian 
+  shift_dih: false
+  env: implicit 

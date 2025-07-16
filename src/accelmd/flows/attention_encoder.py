@@ -88,6 +88,11 @@ class KernelAttentionEncoder(nn.Module):
         B, N, _ = node_features.shape
         device = node_features.device
         
+        # Ensure all inputs are on the same device as node_features
+        coordinates = coordinates.to(device)
+        if masked_elements is not None:
+            masked_elements = masked_elements.to(device)
+        
         # Compute pairwise distances ||x_i - x_j||^2
         coords_i = coordinates.unsqueeze(2)  # [B, N, 1, 3]
         coords_j = coordinates.unsqueeze(1)  # [B, 1, N, 3]

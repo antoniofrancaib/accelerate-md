@@ -145,8 +145,26 @@ class PTSwapTrainer:
                 det_batch = next(iter(self.val_loader))
                 det_batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in det_batch.items()}
 
-                _, ld_f = self.model.forward(det_batch["source_coords"])
-                _, ld_inv = self.model.inverse(det_batch["target_coords"])
+                # Check if this is a graph flow that needs molecular data
+                from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
+                if isinstance(self.model, PTSwapGraphFlow):
+                    # Pass molecular data for graph flow
+                    _, ld_f = self.model.forward(
+                        coordinates=det_batch["source_coords"],
+                        atom_types=det_batch.get("atom_types"),
+                        adj_list=det_batch.get("adj_list"),
+                        edge_batch_idx=det_batch.get("edge_batch_idx"),
+                        masked_elements=det_batch.get("masked_elements")
+                    )
+                    _, ld_inv = self.model.inverse(
+                        coordinates=det_batch["target_coords"],
+                        atom_types=det_batch.get("atom_types"),
+                        adj_list=det_batch.get("adj_list")
+                    )
+                else:
+                    # Simple flow - only needs coordinates
+                    _, ld_f = self.model.forward(det_batch["source_coords"])
+                    _, ld_inv = self.model.inverse(det_batch["target_coords"])
 
                 ld_vals = torch.cat([ld_f.flatten(), ld_inv.flatten()])
                 ld_mean = ld_vals.mean().item()

@@ -92,6 +92,17 @@ class GraphEmbedding(nn.Module):
         if self.graph_embed_dim == 0:
             # Return zero-dimensional embedding
             return torch.zeros(B, 0, device=atom_types.device)
+        
+        # Ensure atom_types is on the same device as the embedding layer
+        if self.atom_embedder is not None:
+            device = next(self.atom_embedder.parameters()).device
+            atom_types = atom_types.to(device)
+            if masked_elements is not None:
+                masked_elements = masked_elements.to(device)
+            if adj_list is not None:
+                adj_list = adj_list.to(device)
+            if edge_batch_idx is not None:
+                edge_batch_idx = edge_batch_idx.to(device)
             
         # Embed atom types
         atom_embeds = self.atom_embedder(atom_types)  # [B, N, atom_embed_dim]

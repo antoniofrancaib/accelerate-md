@@ -1,4 +1,4 @@
-"""Flow models for PT swap proposals."""
+"""Flow models for PT swap proposals.""" 
 from .pt_swap_flow import PTSwapFlow
 from .pt_swap_graph_flow import PTSwapGraphFlow
 from .graph_coupling_layer import GraphNVPCouplingLayer

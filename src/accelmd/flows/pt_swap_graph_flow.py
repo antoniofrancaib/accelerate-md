@@ -81,16 +81,27 @@ class PTSwapGraphFlow(nn.Module):
         self.source_temp = source_temperature
         self.target_temp = target_temperature
         
-        # Build Boltzmann target distributions
+        # Build Boltzmann target distributions with correct temperatures
         if target_kwargs is None:
             target_kwargs = {}
             
+        # Source target (low temperature)
+        source_kwargs = target_kwargs.copy()
+        source_kwargs['temperature'] = source_temperature
         self.source_target = build_target(
-            target_name, device=device, **target_kwargs
+            target_name, device=device, **source_kwargs
         )
+        
+        # Target target (high temperature)  
+        target_kwargs_copy = target_kwargs.copy()
+        target_kwargs_copy['temperature'] = target_temperature
         self.target_target = build_target(
-            target_name, device=device, **target_kwargs
+            target_name, device=device, **target_kwargs_copy
         )
+        
+        # Aliases for training code compatibility
+        self.base_low = self.source_target   # Low temperature base distribution
+        self.base_high = self.target_target  # High temperature base distribution
         
         # Graph coupling layers with alternating phases
         self.coupling_layers = nn.ModuleList()
@@ -112,8 +123,8 @@ class PTSwapGraphFlow(nn.Module):
     def forward(
         self,
         coordinates: Tensor,  # [B, N, 3] input coordinates
-        atom_types: Tensor,   # [B, N] atom type indices
-        adj_list: Optional[Tensor] = None,  # [E, 2] edge connectivity
+        atom_types: Optional[Tensor] = None,   # [B, N] atom type indices (required for graph flow)
+        adj_list: Optional[Tensor] = None,  # [E, 2] edge connectivity (required for graph flow)
         edge_batch_idx: Optional[Tensor] = None,  # [E] batch indices
         masked_elements: Optional[Tensor] = None,  # [B, N] padding mask
         reverse: bool = False,
@@ -125,11 +136,11 @@ class PTSwapGraphFlow(nn.Module):
         coordinates : Tensor, shape [B, N, 3]
             Input molecular coordinates
         atom_types : Tensor, shape [B, N]
-            Atom type indices
-        adj_list : Tensor, shape [E, 2], optional
-            Edge connectivity list
+            Atom type indices (required for molecular structure)
+        adj_list : Tensor, shape [E, 2]
+            Edge connectivity list (required for molecular bonds)
         edge_batch_idx : Tensor, shape [E], optional
-            Batch indices for edges
+            Batch indices for edges (auto-generated if None)
         masked_elements : Tensor, shape [B, N], optional
             Padding mask (True for padding atoms)
         reverse : bool
@@ -142,8 +153,24 @@ class PTSwapGraphFlow(nn.Module):
         total_log_det : Tensor, shape [B]
             Total log-determinant across all layers
         """
+        # Validate required inputs for graph-conditioned flow
+        if atom_types is None:
+            raise ValueError("atom_types is required for graph-conditioned flow. Dataset should provide real molecular data.")
+        if adj_list is None:
+            raise ValueError("adj_list is required for graph-conditioned flow. Dataset should provide real molecular bond connectivity.")
+        
+        # Generate edge batch indices if not provided
+        if edge_batch_idx is None:
+            B = coordinates.shape[0]
+            n_edges = adj_list.shape[0]
+            edge_batch_idx = torch.repeat_interleave(
+                torch.arange(B, device=coordinates.device), 
+                n_edges
+            )
+        
         current_coords = coordinates
-        total_log_det = torch.zeros(coordinates.shape[0], device=coordinates.device)
+        model_device = next(self.parameters()).device
+        total_log_det = torch.zeros(coordinates.shape[0], device=model_device)
         
         # Apply coupling layers in forward or reverse order
         layers = self.coupling_layers
@@ -159,96 +186,154 @@ class PTSwapGraphFlow(nn.Module):
                 masked_elements=masked_elements,
                 reverse=reverse,
             )
-            total_log_det += log_det
+            # Ensure log_det is on the same device as total_log_det
+            total_log_det += log_det.to(total_log_det.device)
             
         return current_coords, total_log_det
     
-    def log_likelihood(
-        self,
-        source_coords: Tensor,  # [B, N, 3] source configuration
-        target_coords: Tensor,  # [B, N, 3] target configuration  
-        atom_types: Tensor,     # [B, N] atom types
-        adj_list: Optional[Tensor] = None,
-        edge_batch_idx: Optional[Tensor] = None,
-        masked_elements: Optional[Tensor] = None,
-        direction: str = "forward",  # "forward" or "reverse"
-    ) -> Tensor:
-        """Compute log-likelihood for bidirectional training.
+    def inverse(self, coordinates: Tensor, atom_types: Tensor = None, adj_list: Tensor = None) -> Tuple[Tensor, Tensor]:
+        """Inverse flow transformation for trainer compatibility.
         
         Parameters
         ----------
-        source_coords : Tensor, shape [B, N, 3]
-            Source temperature coordinates
-        target_coords : Tensor, shape [B, N, 3]  
-            Target temperature coordinates
-        atom_types : Tensor, shape [B, N]
-            Atom type indices
-        adj_list : Tensor, optional
-            Edge connectivity
-        edge_batch_idx : Tensor, optional
-            Batch indices for edges
-        masked_elements : Tensor, optional  
-            Padding mask
-        direction : str
-            "forward" for low→high temp, "reverse" for high→low temp
+        coordinates : Tensor, shape [B, N, 3]
+            Input coordinates
+        atom_types : Tensor, shape [B, N], optional
+            Atom type indices (required for graph flow)
+        adj_list : Tensor, shape [E, 2], optional  
+            Edge connectivity (required for graph flow)
+            
+        Returns
+        -------
+        output_coords : Tensor, shape [B, N, 3]
+            Transformed coordinates
+        total_log_det : Tensor, shape [B]
+            Total log-determinant
+        """
+        # For trainer compatibility: if atom_types/adj_list not provided, 
+        # assume they will be provided in the forward call through the training batch
+        if atom_types is None or adj_list is None:
+            raise ValueError(
+                "Graph flow requires atom_types and adj_list. "
+                "Update trainer to pass molecular data from batch."
+            )
+        
+        # Generate edge batch indices
+        B = coordinates.shape[0]
+        n_edges = adj_list.shape[0]
+        edge_batch_idx = torch.repeat_interleave(
+            torch.arange(B, device=coordinates.device), 
+            n_edges
+        )
+        
+        # Call forward with reverse=True
+        return self.forward(
+            coordinates=coordinates,
+            atom_types=atom_types,
+            adj_list=adj_list,
+            edge_batch_idx=edge_batch_idx,
+            masked_elements=None,
+            reverse=True,
+        )
+    
+    def log_likelihood(
+        self,
+        x_coords: Tensor,  # [B, N, 3] source configuration (for interface compatibility)
+        y_coords: Tensor,  # [B, N, 3] target configuration (for interface compatibility)
+        reverse: bool = False,  # direction flag (for interface compatibility)
+        # Additional graph-specific arguments (optional for compatibility)
+        source_coords: Optional[Tensor] = None,  
+        target_coords: Optional[Tensor] = None,
+        atom_types: Optional[Tensor] = None,
+        adj_list: Optional[Tensor] = None,
+        edge_batch_idx: Optional[Tensor] = None,
+        masked_elements: Optional[Tensor] = None,
+        direction: Optional[str] = None,
+    ) -> Tensor:
+        """Compute log-likelihood for bidirectional training.
+        
+        Compatible with both old interface (x_coords, y_coords, reverse) 
+        and new interface (source_coords, target_coords, direction).
+        
+        Parameters
+        ----------
+        x_coords : Tensor, shape [B, N, 3]
+            Source coordinates (old interface)
+        y_coords : Tensor, shape [B, N, 3]  
+            Target coordinates (old interface)
+        reverse : bool
+            Direction flag (old interface)
+        source_coords, target_coords, atom_types, etc. : optional
+            New interface arguments
             
         Returns
         -------
         log_likelihood : Tensor, shape [B]
             Log-likelihood values for each sample
         """
+        # Interface conversion: handle both old and new calling conventions
+        if source_coords is None:
+            source_coords = x_coords
+        if target_coords is None:
+            target_coords = y_coords
+        if direction is None:
+            direction = "reverse" if reverse else "forward"
+            
+        # Validate required molecular data
+        if atom_types is None:
+            raise ValueError("atom_types is required for graph-conditioned flow. Dataset should provide real molecular data.")
+        if adj_list is None:
+            raise ValueError("adj_list is required for graph-conditioned flow. Dataset should provide real molecular bond connectivity.")
+            
+        # Generate edge batch indices if not provided
+        if edge_batch_idx is None:
+            B = source_coords.shape[0]
+            n_edges = adj_list.shape[0]
+            edge_batch_idx = torch.repeat_interleave(
+                torch.arange(B, device=source_coords.device), 
+                n_edges
+            )
         if direction == "forward":
-            # Forward: p(target | source) using source base distribution
-            predicted_coords, log_det = self.forward(
-                coordinates=source_coords,
+            # Forward: log p(target | source) = log p_low(f^-1(target)) + log|det J_f^-1|
+            # Use inverse mapping: target → reconstructed source, evaluate with low-temp base
+            reconstructed_coords, log_det = self.forward(
+                coordinates=target_coords,  # Apply inverse to target
                 atom_types=atom_types,
                 adj_list=adj_list,
                 edge_batch_idx=edge_batch_idx,
                 masked_elements=masked_elements,
-                reverse=False,  # Forward flow
+                reverse=True,  # Inverse flow (f^-1)
             )
             
-            # Physics-informed likelihood with source temperature base
+            # Evaluate reconstructed coordinates with low temperature base
             log_prob_base = self._log_boltzmann_masked(
-                coordinates=source_coords,
-                temperature=self.source_temp,
+                coordinates=reconstructed_coords,
+                target_distribution=self.source_target,  # Low temperature
                 masked_elements=masked_elements,
             )
             
-            # MSE term for flow accuracy (optional regularization)
-            mse_loss = ((predicted_coords - target_coords) ** 2).sum(dim=(1, 2))
-            if masked_elements is not None:
-                # Account for variable molecule sizes
-                valid_atoms = (~masked_elements).sum(dim=1).float()  # [B]
-                mse_loss = mse_loss / (valid_atoms * 3)  # Normalize by degrees of freedom
-            
-            log_likelihood = log_prob_base + log_det - 0.1 * mse_loss  # Small MSE weight
+            log_likelihood = log_prob_base + log_det
             
         elif direction == "reverse":
-            # Reverse: p(source | target) using target base distribution
-            predicted_coords, log_det = self.forward(
-                coordinates=target_coords,
+            # Reverse: log p(source | target) = log p_high(f(source)) + log|det J_f|
+            # Use forward mapping: source → reconstructed target, evaluate with high-temp base
+            reconstructed_coords, log_det = self.forward(
+                coordinates=source_coords,  # Apply forward to source
                 atom_types=atom_types,
                 adj_list=adj_list,
                 edge_batch_idx=edge_batch_idx,
                 masked_elements=masked_elements,
-                reverse=True,  # Reverse flow
+                reverse=False,  # Forward flow (f)
             )
             
-            # Physics-informed likelihood with target temperature base
+            # Evaluate reconstructed coordinates with high temperature base
             log_prob_base = self._log_boltzmann_masked(
-                coordinates=target_coords,
-                temperature=self.target_temp,
+                coordinates=reconstructed_coords,
+                target_distribution=self.target_target,  # High temperature
                 masked_elements=masked_elements,
             )
             
-            # MSE term
-            mse_loss = ((predicted_coords - source_coords) ** 2).sum(dim=(1, 2))
-            if masked_elements is not None:
-                valid_atoms = (~masked_elements).sum(dim=1).float()
-                mse_loss = mse_loss / (valid_atoms * 3)
-                
-            log_likelihood = log_prob_base + log_det - 0.1 * mse_loss
+            log_likelihood = log_prob_base + log_det
             
         else:
             raise ValueError(f"Unknown direction: {direction}")
@@ -315,10 +400,10 @@ class PTSwapGraphFlow(nn.Module):
     def _log_boltzmann_masked(
         self,
         coordinates: Tensor,  # [B, N, 3]
-        temperature: float,
+        target_distribution,  # AldpBoltzmann instance (source_target or target_target)
         masked_elements: Optional[Tensor] = None,  # [B, N]
     ) -> Tensor:
-        """Compute masked Boltzmann log-probability."""
+        """Compute masked Boltzmann log-probability using the specified target distribution."""
         B = coordinates.shape[0]
         
         # Flatten coordinates while masking padding
@@ -328,16 +413,16 @@ class PTSwapGraphFlow(nn.Module):
         else:
             coords_flat = coordinates.view(B, -1)
             
-        # Boltzmann log-probability at given temperature
+        # Boltzmann log-probability using the provided target distribution
         log_probs = []
         for i in range(B):
             if masked_elements is not None:
                 # Extract only non-masked coordinates
                 valid_mask = ~masked_elements[i]  # [N]
                 valid_coords = coordinates[i][valid_mask].view(-1)  # [3*n_valid]
-                log_prob = self.source_target.log_prob(valid_coords, temperature)
+                log_prob = target_distribution.log_prob(valid_coords.unsqueeze(0)).squeeze(0)
             else:
-                log_prob = self.source_target.log_prob(coords_flat[i], temperature)
+                log_prob = target_distribution.log_prob(coords_flat[i].unsqueeze(0)).squeeze(0)
             log_probs.append(log_prob)
             
         return torch.stack(log_probs)

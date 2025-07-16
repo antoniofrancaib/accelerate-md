@@ -27,7 +27,7 @@ class PTTemperaturePairDataset(Dataset):
     pt_data_path : str
         Path to the PT trajectory file (e.g., 'datasets/pt_dipeptides/AX/pt_AX.pt')
     molecular_data_path : str  
-        Path to molecular data directory (for metadata, currently unused)
+        Path to molecular data directory containing adj_list.pt and atom_types.pt
     temp_pair : Tuple[int, int]
         Indices of the temperature pair (e.g., (0, 1) for T0 -> T1)
     subsample_rate : int, optional
@@ -58,8 +58,9 @@ class PTTemperaturePairDataset(Dataset):
         self.filter_chirality_enabled = filter_chirality
         self.center_coordinates_enabled = center_coordinates
         
-        # Load PT trajectory data
+        # Load PT trajectory data and molecular structure
         self._load_pt_data()
+        self._load_molecular_data()
         
     def _load_pt_data(self) -> None:
         """Load and preprocess PT trajectory data."""
@@ -72,7 +73,7 @@ class PTTemperaturePairDataset(Dataset):
         except Exception:
             # Fallback for non-tensor data
             pt_data = torch.load(self.pt_data_path, map_location="cpu")
-            
+        
         # Extract coordinates for our temperature pair
         low_idx, high_idx = self.temp_pair
         
@@ -118,7 +119,7 @@ class PTTemperaturePairDataset(Dataset):
             target_coords = traj[:, high_idx, :]  # [steps*chains, coords]
         else:
             raise ValueError(f"Unexpected trajectory shape: {traj.shape}")
-            
+        
         # Reshape from flat [N*3] to [N, 3] format expected by flow model
         n_atoms = source_coords.shape[1] // 3
         source_coords = source_coords.view(-1, n_atoms, 3)
@@ -128,7 +129,7 @@ class PTTemperaturePairDataset(Dataset):
         if self.center_coordinates_enabled:
             source_coords = center_coordinates(source_coords)
             target_coords = center_coordinates(target_coords)
-            
+        
         # Apply chirality filtering if enabled
         # Note: chirality filtering is typically done on combined data, but for now
         # we apply it separately to source and target coordinates
@@ -157,18 +158,62 @@ class PTTemperaturePairDataset(Dataset):
             )
             
         print(f"Loaded PT dataset: {len(self)} samples, coord shape: {self.source_coords.shape[1:]}")
+    
+    def _load_molecular_data(self) -> None:
+        """Load molecular structure data (atom types and adjacency list)."""
+        # Load atom types
+        atom_types_path = self.molecular_data_path / "atom_types.pt"
+        if not atom_types_path.exists():
+            raise FileNotFoundError(f"Atom types file not found: {atom_types_path}")
         
+        try:
+            self.atom_types = torch.load(atom_types_path, map_location="cpu", weights_only=True)
+        except Exception:
+            self.atom_types = torch.load(atom_types_path, map_location="cpu")
+        
+        # Load adjacency list
+        adj_list_path = self.molecular_data_path / "adj_list.pt"
+        if not adj_list_path.exists():
+            raise FileNotFoundError(f"Adjacency list file not found: {adj_list_path}")
+        
+        try:
+            self.adj_list = torch.load(adj_list_path, map_location="cpu", weights_only=True)
+        except Exception:
+            self.adj_list = torch.load(adj_list_path, map_location="cpu")
+        
+        # Validate data shapes
+        n_atoms = self.source_coords.shape[1]
+        if len(self.atom_types) != n_atoms:
+            raise ValueError(
+                f"Atom types length ({len(self.atom_types)}) doesn't match number of atoms ({n_atoms})"
+            )
+        
+        # Handle different adjacency list formats 
+        if self.adj_list.ndim == 2:
+            if self.adj_list.shape[0] == 2:
+                # Format: [2, n_edges] -> transpose to [n_edges, 2]
+                self.adj_list = self.adj_list.T
+            # else: already in [n_edges, 2] format
+        else:
+            raise ValueError(f"Unexpected adjacency list shape: {self.adj_list.shape}")
+        
+        print(f"Loaded molecular data: {len(self.atom_types)} atoms, {len(self.adj_list)} edges")
+        print(f"Atom types: {self.atom_types}")
+        print(f"Adjacency list shape: {self.adj_list.shape}")
+    
     def __len__(self) -> int:
         """Return number of coordinate pairs."""
         return len(self.source_coords)
-        
+    
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Return a single coordinate pair."""
+        """Return a single coordinate pair with molecular structure data."""
         return {
             "source_coords": self.source_coords[idx],
             "target_coords": self.target_coords[idx],
+            "atom_types": self.atom_types,  # Same for all samples
+            "adj_list": self.adj_list,      # Same for all samples
         }
-        
+    
     @staticmethod
     def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """Collate function for DataLoader.
@@ -180,14 +225,31 @@ class PTTemperaturePairDataset(Dataset):
             
         Returns
         -------
-        Dict[str, torch.Tensor]
-            Batched tensors with keys matching trainer expectations
+        collated : Dict[str, torch.Tensor]
+            Batched data with proper edge batch indices
         """
-        # Stack coordinate tensors
+        batch_size = len(batch)
+        
+        # Stack coordinate data
         source_coords = torch.stack([sample["source_coords"] for sample in batch])
         target_coords = torch.stack([sample["target_coords"] for sample in batch])
+        
+        # Atom types are the same for all molecules, so we just stack them
+        atom_types = torch.stack([sample["atom_types"] for sample in batch])
+        
+        # Adjacency list is the same for all molecules, but we need to create edge batch indices
+        adj_list = batch[0]["adj_list"]  # Same for all molecules
+        n_edges = adj_list.shape[0]
+        
+        # Create edge batch indices: [0, 0, 0, ..., 1, 1, 1, ..., B-1, B-1, B-1]
+        edge_batch_idx = torch.repeat_interleave(
+            torch.arange(batch_size), n_edges
+        )
         
         return {
             "source_coords": source_coords,
             "target_coords": target_coords,
+            "atom_types": atom_types,
+            "adj_list": adj_list,
+            "edge_batch_idx": edge_batch_idx,
         } 

@@ -138,6 +138,18 @@ class GraphNVPCouplingLayer(nn.Module):
             Log-determinant of Jacobian
         """
         B, N, _ = coordinates.shape
+        
+        # Ensure all inputs are on the model device
+        model_device = next(self.parameters()).device
+        coordinates = coordinates.to(model_device)
+        atom_types = atom_types.to(model_device)
+        if adj_list is not None:
+            adj_list = adj_list.to(model_device)
+        if edge_batch_idx is not None:
+            edge_batch_idx = edge_batch_idx.to(model_device)
+        if masked_elements is not None:
+            masked_elements = masked_elements.to(model_device)
+            
         device = coordinates.device
         
         # Generate dynamic coupling mask

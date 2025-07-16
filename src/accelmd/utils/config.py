@@ -210,4 +210,4 @@ def _autofill_from_peptide(cfg: Dict[str, Any]):
 
     data_cfg = cfg.setdefault("data", {})
     data_cfg.setdefault("pt_data_path", f"{base_dir}/pt_{code}.pt")
-    data_cfg.setdefault("molecular_data_path", base_dir) 
+    data_cfg.setdefault("molecular_data_path", base_dir)
