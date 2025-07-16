@@ -53,16 +53,15 @@ training:
   early_stopping_patience: 50
   clip_grad_norm: 5.0
   warmup_epochs: 0  # no auxiliary schedules when using pure NLL
-  acc_weight_start: 0.0  # disable acceptance term
-  acc_weight_end: 0.0
   min_lr: 0.00005
   lr_factor: 0.3
   lr_patience: 2
 
-  nll_start: 1.0
-  nll_end: 1.0
-  acc_start: 0.0
-  acc_end: 0.0
+  # Loss component weights (can be scheduled over warmup_epochs)
+  nll_start: 0.0    # NLL weight at training start
+  nll_end: 0.0      # NLL weight at training end
+  acc_start: 1.0    # Acceptance loss weight at start (disabled)
+  acc_end: 1.0      # Acceptance loss weight at end (disabled)
 
 # Output directories
 output:

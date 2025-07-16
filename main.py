@@ -12,12 +12,12 @@ import json
 from pathlib import Path
 from typing import Tuple
 import re
-import subprocess
 
 import torch
 from torch.utils.data import DataLoader
 
 from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config
+from src.accelmd.utils.ramachandran_plotting import generate_ramachandran_grid
 from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
 from src.accelmd.flows import PTSwapFlow, PTSwapGraphFlow
 from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
@@ -282,7 +282,7 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
 
 
 def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
-    """Generate 2×2 Ramachandran grid for the given pair using the helper script.
+    """Generate 2×2 Ramachandran grid for the given pair using the utility function.
 
     The plot is saved under <pair_dir>/plots/rama_grid.png where *pair_dir* is
     dictated by `create_run_config` in utils.config.
@@ -293,21 +293,20 @@ def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
     plots_dir.mkdir(parents=True, exist_ok=True)
     out_path = plots_dir / "rama_grid.png"
 
-    cmd = [
-        "python",
-        "scripts/plot_rama_grid.py",
-        "--config", cfg_path,
-        "--checkpoint", str(checkpoint),
-        "--temp-pair", str(pair[0]), str(pair[1]),
-        "--n-samples", "20000",
-        "--out", str(out_path),
-    ]
     try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
+        success = generate_ramachandran_grid(
+            config_path=cfg_path,
+            checkpoint_path=str(checkpoint),
+            temp_pair=pair,
+            output_path=str(out_path),
+            n_samples=20000,
+        )
+        if not success:
+            print(f"[WARN] Ramachandran plot generation failed for pair {pair}")
+        else:
+            print(f"Ramachandran plot saved to {out_path}")
+    except Exception as e:
         print(f"[WARN] Ramachandran plot generation failed for pair {pair}: {e}")
-    else:
-        print(f"Ramachandran plot saved to {out_path}")
 
 
 def main():

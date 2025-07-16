@@ -143,7 +143,7 @@ def acceptance_loss(
     energy_threshold
         Optional energy threshold for clipping.
     """
-    from .openmm_bridge import compute_potential_energy  # Import from training folder
+
     
     device = next(model.parameters()).device
     x_low = batch["source_coords"].to(device)
@@ -170,11 +170,16 @@ def acceptance_loss(
         y_high, log_det_f = model.forward(x_low)   # low → high
         y_low, log_det_inv = model.inverse(x_high) # high → low
 
-    # Energies (kJ/mol) – differentiable via autograd bridge
-    U_x_low = compute_potential_energy(_flatten(x_low))      # [B]
-    U_x_high = compute_potential_energy(_flatten(x_high))
-    U_y_low = compute_potential_energy(_flatten(y_low))
-    U_y_high = compute_potential_energy(_flatten(y_high))
+    # Energies (kJ/mol) – use model's target distributions (works for any system)
+    def _get_energy(coords_flat, base_target):
+        """Get potential energy from target's log_prob: U = -log_prob / beta"""
+        log_prob = base_target.log_prob(coords_flat)  # -β U
+        return -log_prob / base_target.beta  # U in kJ/mol
+    
+    U_x_low = _get_energy(_flatten(x_low), model.base_low)      # [B]
+    U_x_high = _get_energy(_flatten(x_high), model.base_high)
+    U_y_low = _get_energy(_flatten(y_low), model.base_low)
+    U_y_high = _get_energy(_flatten(y_high), model.base_high)
 
     # Metropolis exponent (negative log α)
     neg_log_alpha = (

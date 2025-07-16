@@ -5,13 +5,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
-from accelmd.samplers.pt.sampler import ParallelTempering
-from accelmd.samplers.pt.dyn_wrapper import DynSamplerWrapper
-from accelmd.targets.dipeptide_potential import DipeptidePotentialCart
-from accelmd.data.molecular_data import torch_to_mdtraj
-from accelmd.utils.plot_utils import plot_Ramachandran
+from src.accelmd.samplers.pt.sampler import ParallelTempering
+from src.accelmd.samplers.pt.dyn_wrapper import DynSamplerWrapper
+from src.accelmd.targets.dipeptide_potential import DipeptidePotentialCart
+from src.accelmd.data.molecular_data import torch_to_mdtraj
+from src.accelmd.utils.plot_utils import plot_Ramachandran
 import mdtraj as md
 
+
+"""Usage:
+Edit run_pt_simulation.py line 127 to set your desired peptide (e.g., "name": "AK")
+Submit with: conda activate accelmd && python run_pt_simulation.py or sbatch run_pt_simulation.sh
+The script automatically uses the correct paths and names"""
 
 def main(config):
     """
@@ -100,7 +105,8 @@ def main(config):
                     wandb.log({f"swap_rates/{all_temps[j].item():.2f}~{all_temps[j + 1].item():.2f}": pt.sampler.swap_rates[j]}, step=i)
         if i == 0 or (i + 1) % config["check_interval"] == 0:
             os.makedirs(config["save_fold"], exist_ok=True)
-            torch.save(torch.stack(traj, dim=2)[0].detach().cpu().float(), f"{config['save_fold']}/pt_{config['name']}.pt")
+            # Save full trajectory structure [temp, chain, step, coord] for checkpoints too
+            torch.save(torch.stack(traj, dim=2).detach().cpu().float(), f"{config['save_fold']}/pt_{config['name']}.pt")
             fig = eval_fn(
                 torch.stack(traj[-config["check_interval"]:], dim=2)[0].reshape(-1, dim).to(config["device"]),
                 f'{plot_path}/{i + 1}.png'
@@ -123,7 +129,7 @@ if __name__ == '__main__':
         "temp_schedule": "geom",  # geom/linear, we usually use the geometrical schedule, but you could play
         "temp_low": 1.0,
         "temp_high": 5.,
-        "total_n_temp": 5,
+        "total_n_temp": 10,
         "num_chains": 10,
         "num_steps": 100000, # number of steps for PT simulation
         "step_size": 0.0001, # step size of MCMC

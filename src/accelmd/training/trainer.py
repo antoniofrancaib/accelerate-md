@@ -45,18 +45,16 @@ class PTSwapTrainer:
         self.recon_weight = config["training"].get("recon_weight", 1.0)
         self.recon_weight_end = config["training"].get("recon_weight_end", 0.0)
 
-        # Acceptance-loss weight schedule (λ_acc)
-        self.acc_weight_start = config["training"].get("acc_weight_start", 0.0)
-        self.acc_weight_end = config["training"].get("acc_weight_end", 1.0)
-
-        # Annealed NLL weight:  we allow either a fixed `nll_weight` (legacy)
-        # or a Timewarp-style geometric warm-up controlled by three knobs.  If
-        # the warm-up keys are absent we fall back to the fixed weight so
-        # existing configs keep working unchanged.
-
+        # Loss component weights from config (simplified naming)
         t_cfg = config["training"]
-        self.nll_weight_start = t_cfg.get("nll_weight_start", t_cfg.get("nll_weight", 0.0))
-        self.nll_weight_end = t_cfg.get("nll_weight_end", self.nll_weight_start)
+        
+        # NLL weight schedule
+        self.nll_weight_start = t_cfg.get("nll_start", t_cfg.get("nll_weight_start", t_cfg.get("nll_weight", 1.0)))
+        self.nll_weight_end = t_cfg.get("nll_end", t_cfg.get("nll_weight_end", self.nll_weight_start))
+        
+        # Acceptance-loss weight schedule (λ_acc)
+        self.acc_weight_start = t_cfg.get("acc_start", t_cfg.get("acc_weight_start", 0.0))
+        self.acc_weight_end = t_cfg.get("acc_end", t_cfg.get("acc_weight_end", 0.0))
         self.nll_warmup_epochs = t_cfg.get("nll_warmup_epochs", 0)
 
         # Number of epochs over which we interpolate weights
@@ -96,19 +94,21 @@ class PTSwapTrainer:
         clip_val_hist = []
         for epoch in range(1, self.num_epochs + 1):
             self._current_epoch = epoch
-            # Compute current β (NLL weight) via geometric schedule.
-            beta = self._current_nll_weight(epoch)
+            # Compute current weights via geometric schedule.
+            nll_weight = self._current_nll_weight(epoch)
+            acc_weight = self._current_acc_weight(epoch)
 
             train_loss, train_nll_f, train_nll_r, train_acc, train_clip_frac = self._run_epoch(
-                self.train_loader, training=True
+                self.train_loader, training=True, nll_weight=nll_weight, acc_weight=acc_weight
             )
             val_loss, val_nll_f, val_nll_r, val_acc, val_clip_frac = self._run_epoch(
-                self.val_loader, training=False
+                self.val_loader, training=False, nll_weight=nll_weight, acc_weight=acc_weight
             )
 
             print(
                 f"Epoch {epoch:03d} | loss {train_loss:.3e} (nll_f {train_nll_f:.3e} | nll_r {train_nll_r:.3e} | acc {train_acc:.3e}) "
-                f"| val_loss {val_loss:.3e} (nll_f {val_nll_f:.3e} | nll_r {val_nll_r:.3e} | acc {val_acc:.3e})"
+                f"| val_loss {val_loss:.3e} (nll_f {val_nll_f:.3e} | nll_r {val_nll_r:.3e} | acc {val_acc:.3e}) "
+                f"| weights (nll={nll_weight:.3f}, acc={acc_weight:.3f})"
             )
 
             train_hist.append(train_loss)
@@ -214,7 +214,7 @@ class PTSwapTrainer:
         }
 
     # ------------------------------------------------------------------
-    def _run_epoch(self, loader: DataLoader, training: bool) -> tuple[float, float, float, float]:
+    def _run_epoch(self, loader: DataLoader, training: bool, nll_weight: float = 1.0, acc_weight: float = 0.0) -> tuple[float, float, float, float]:
         self.model.train(mode=training)
         total_loss = 0.0
         nll_f_sum = 0.0
@@ -240,11 +240,21 @@ class PTSwapTrainer:
                     return_components=True,
                 )
 
-                # Acceptance-loss removed; use zero placeholder to keep API unchanged
-                acc_loss = torch.tensor(0.0, device=self.device)
+                # Compute acceptance loss if weight > 0
+                if acc_weight > 0:
+                    from .losses import acceptance_loss
+                    acc_loss = acceptance_loss(
+                        self.model,
+                        batch,
+                        beta_low=self.model.base_low.beta,
+                        beta_high=self.model.base_high.beta,
+                        energy_threshold=self.energy_threshold,
+                    )
+                else:
+                    acc_loss = torch.tensor(0.0, device=self.device)
 
-            # Acceptance term disabled – total loss is pure NLL
-            total = nll_total
+            # Apply weights to loss components
+            total = nll_weight * nll_total + acc_weight * acc_loss
 
             if training:
                 self.optimizer.zero_grad()
@@ -299,7 +309,17 @@ class PTSwapTrainer:
         t = min(epoch, self.warmup_epochs)
         ratio = self.nll_weight_end / max(1e-12, self.nll_weight_start)
         beta = self.nll_weight_start * (ratio ** (t / self.warmup_epochs))
-        return beta 
+        return beta
+    
+    def _current_acc_weight(self, epoch: int) -> float:
+        """Compute current acceptance loss weight."""
+        if self.warmup_epochs == 0:
+            return self.acc_weight_end  # fixed behaviour
+
+        t = min(epoch, self.warmup_epochs)
+        ratio = self.acc_weight_end / max(1e-12, self.acc_weight_start)
+        weight = self.acc_weight_start * (ratio ** (t / self.warmup_epochs))
+        return weight 
 
     # ------------------------------------------------------------------
     @property
