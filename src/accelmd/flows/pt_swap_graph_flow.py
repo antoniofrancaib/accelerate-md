@@ -162,10 +162,12 @@ class PTSwapGraphFlow(nn.Module):
         # Generate edge batch indices if not provided
         if edge_batch_idx is None:
             B = coordinates.shape[0]
-            n_edges = adj_list.shape[0]
+            n_edges_per_mol = adj_list.shape[0]  # Assume adj_list is for single molecule
+            # For batch processing: same molecule topology replicated B times
+            # [0,0,...,0, 1,1,...,1, 2,2,...,2, ...] where each group has n_edges_per_mol entries
             edge_batch_idx = torch.repeat_interleave(
                 torch.arange(B, device=coordinates.device), 
-                n_edges
+                n_edges_per_mol
             )
         
         current_coords = coordinates

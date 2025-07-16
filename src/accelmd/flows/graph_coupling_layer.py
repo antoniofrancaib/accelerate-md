@@ -104,6 +104,16 @@ class GraphNVPCouplingLayer(nn.Module):
             hidden_layer_dims=[hidden_dim],  # 1 hidden layer
         )
         
+        # Initialize scale network to produce small values initially
+        with torch.no_grad():
+            if hasattr(self.scale_network._layers, '__getitem__'):
+                # Zero-initialize final layer of scale network for stable init
+                final_layer = self.scale_network._layers[-1]
+                if hasattr(final_layer, 'weight'):
+                    torch.nn.init.zeros_(final_layer.weight)
+                    if hasattr(final_layer, 'bias') and final_layer.bias is not None:
+                        torch.nn.init.zeros_(final_layer.bias)
+        
     def forward(
         self,
         coordinates: Tensor,  # [B, N, 3] input coordinates
@@ -139,17 +149,7 @@ class GraphNVPCouplingLayer(nn.Module):
         """
         B, N, _ = coordinates.shape
         
-        # Ensure all inputs are on the model device
-        model_device = next(self.parameters()).device
-        coordinates = coordinates.to(model_device)
-        atom_types = atom_types.to(model_device)
-        if adj_list is not None:
-            adj_list = adj_list.to(model_device)
-        if edge_batch_idx is not None:
-            edge_batch_idx = edge_batch_idx.to(model_device)
-        if masked_elements is not None:
-            masked_elements = masked_elements.to(model_device)
-            
+        # Use device from coordinates (should already be on correct device)
         device = coordinates.device
         
         # Generate dynamic coupling mask
@@ -195,8 +195,11 @@ class GraphNVPCouplingLayer(nn.Module):
         )  # [B, N, hidden_dim]
         
         # Step 4: Scale and shift parameters
-        log_scales = self.scale_network(aggregated_features)  # [B, N, 3]
+        raw_scales = self.scale_network(aggregated_features)  # [B, N, 3]
         shifts = self.shift_network(aggregated_features)      # [B, N, 3]
+        
+        # CRITICAL: Normalize scales to prevent explosion (match simple flow behavior)
+        log_scales = torch.tanh(raw_scales) * 0.05  # Limit initial range to ±0.05
         
         # Apply coupling mask to scale/shift (only transform specified atoms)
         mask_3d = coupling_mask.unsqueeze(-1)  # [B, N, 1]

@@ -1,11 +1,11 @@
-experiment_name: "AK_swap_flows"
+experiment_name: "AA_swap_flows"
 
 # Device selection: "auto" | "cpu" | "cuda"
 # Use "auto" to prefer GPU if available.
 device: "auto"
 
 # Peptide to train on (two-letter code); auto-fills data paths.
-peptide_code: AK
+peptide_code: AA
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
@@ -82,5 +82,5 @@ system:
 target:
   name: dipeptide
   kwargs:
-    pdb_path: datasets/pt_dipeptides/AK/ref.pdb
+    pdb_path: datasets/pt_dipeptides/AA/ref.pdb
     env: implicit 

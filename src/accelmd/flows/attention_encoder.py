@@ -105,6 +105,9 @@ class KernelAttentionEncoder(nn.Module):
             # Compute attention weights w_ij = exp(-||x_i - x_j||^2 / σ^2)
             attention_logits = -dist_squared / (sigma ** 2)  # [B, N, N]
             
+            # CRITICAL: Clamp attention logits to prevent numerical explosion
+            attention_logits = torch.clamp(attention_logits, min=-20.0, max=20.0)
+            
             # Mask out padding atoms in attention
             if masked_elements is not None:
                 # Mask rows (queries) and columns (keys) for padding atoms
