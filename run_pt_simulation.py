@@ -58,7 +58,7 @@ def main(config):
         temp_plot_paths[i] = temp_dir
 
     target = DipeptidePotentialCart(
-        pdb_path=f"datasets/timewarp/2AA-1-big/train/{config['name']}-traj-state0.pdb",
+        pdb_path=f"datasets/timewarp/2AA-1-big/val/{config['name']}-traj-state0.pdb",
         n_threads=1,  # TODO: fix n_threads=64
         device=config["device"]
     )
@@ -137,7 +137,7 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = {
-        "name": "KK",  # gmm or aldp_inter or aldp_cart
+        "name": "SA",  # gmm or aldp_inter or aldp_cart
         "temp_schedule": "geom",  # geom/linear, we usually use the geometrical schedule, but you could play
         "temp_low": 1.0,
         "temp_high": 5.,
