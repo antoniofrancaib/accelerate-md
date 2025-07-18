@@ -137,16 +137,16 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = {
-        "name": "AK",  # gmm or aldp_inter or aldp_cart
+        "name": "KK",  # gmm or aldp_inter or aldp_cart
         "temp_schedule": "geom",  # geom/linear, we usually use the geometrical schedule, but you could play
         "temp_low": 1.0,
         "temp_high": 5.,
-        "total_n_temp": 10,
+        "total_n_temp": 5,
         "num_chains": 10,
-        "num_steps": 1000, # number of steps for PT simulation
+        "num_steps": 100000, # number of steps for PT simulation
         "step_size": 0.0001, # step size of MCMC
         "swap_interval": 100, # how often to swap samples between different temperatures
-        "check_interval": 100,  # how many steps to evaluate the samples
+        "check_interval": 10000,  # how many steps to evaluate the samples
         "plot_fold": "plots",  # set where you save the plots
         "save_fold": "results",  # set where you save the results
         "use_wandb": False,

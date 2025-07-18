@@ -1,7 +1,9 @@
-"""Graph embedding module for molecular structure conditioning.
+"""Message-passing graph embedding for molecular structure conditioning.
 
-This module implements the GraphEmb(G) function from equation (13) that creates
-a global graph representation h_G ∈ R^d from molecular structure.
+This module implements a simple message-passing GNN approach where:
+- Atom types (C,H,O,N) are node features  
+- Bonds are edges for message passing
+- Fully dimension-agnostic (works for any molecular size)
 """
 
 import torch
@@ -9,162 +11,281 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional
 
-__all__ = ["GraphEmbedding"]
+__all__ = ["MessagePassingGNN"]
 
 
-class GraphEmbedding(nn.Module):
-    """Global graph embedding from molecular structure.
+class MessagePassingGNN(nn.Module):
+    """Simple message-passing GNN for molecular graphs.
     
-    Computes h_G = GraphEmb(G) where G includes atom types and adjacency.
-    This provides a global molecular context that can be zero-dimensional
-    (d=0) for ablation studies.
+    Implements your supervisor's suggestion:
+    - Node features: atom types (C,H,O,N) 
+    - Edges: molecular bonds
+    - Message passing: standard GCN-style aggregation
+    - Output: updated node features (dimension-agnostic)
     
     Parameters
     ----------
     atom_vocab_size : int
         Number of unique atom types (e.g., 4 for H,C,N,O)
-    atom_embed_dim : int  
-        Dimension of atom type embeddings
-    graph_embed_dim : int
-        Output dimension d of h_G (can be 0 for no graph conditioning)
-    use_bonds : bool
-        Whether to include bond information in graph embedding
+    atom_embed_dim : int
+        Initial atom embedding dimension
+    hidden_dim : int
+        Hidden dimension for message-passing layers
+    num_layers : int
+        Number of message-passing layers
+    output_dim : int
+        Output dimension per node
     """
     
     def __init__(
         self,
         atom_vocab_size: int = 4,  # H, C, N, O
-        atom_embed_dim: int = 32,
-        graph_embed_dim: int = 64,
-        use_bonds: bool = True,
+        atom_embed_dim: int = 64,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        output_dim: int = 64,
     ):
         super().__init__()
-        self.graph_embed_dim = graph_embed_dim
-        self.use_bonds = use_bonds
         
-        if graph_embed_dim == 0:
-            # No graph conditioning (d=0 case)
-            self.atom_embedder = None
-            self.graph_encoder = None
-        else:
-            # Atom type embeddings
-            self.atom_embedder = nn.Embedding(atom_vocab_size, atom_embed_dim)
-            
-            # Global graph encoder
-            input_dim = atom_embed_dim
-            if use_bonds:
-                # Add bond embedding dimension
-                input_dim += 16  # Simple bond feature dimension
-                
-            self.graph_encoder = nn.Sequential(
-                nn.Linear(input_dim, graph_embed_dim * 2),
-                nn.ReLU(),
-                nn.Linear(graph_embed_dim * 2, graph_embed_dim),
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        
+        # Initial atom embeddings
+        self.atom_embedder = nn.Embedding(atom_vocab_size, atom_embed_dim)
+        
+        # Message-passing layers
+        self.mp_layers = nn.ModuleList()
+        
+        # Input layer: atom_embed_dim -> hidden_dim
+        self.mp_layers.append(
+            MessagePassingLayer(atom_embed_dim, hidden_dim)
+        )
+        
+        # Hidden layers: hidden_dim -> hidden_dim
+        for _ in range(num_layers - 2):
+            self.mp_layers.append(
+                MessagePassingLayer(hidden_dim, hidden_dim)
             )
+        
+        # Output layer: hidden_dim -> output_dim
+        if num_layers > 1:
+            self.mp_layers.append(
+                MessagePassingLayer(hidden_dim, output_dim)
+            )
+        else:
+            # Single layer case
+            self.mp_layers[0] = MessagePassingLayer(atom_embed_dim, output_dim)
+            
+        # Global graph pooling for graph-level features (simple mean pooling)
+        self.global_pool = nn.Sequential(
+            nn.Linear(output_dim, output_dim // 2),
+            nn.ReLU(),
+            nn.Linear(output_dim // 2, output_dim // 4)
+        )
+        
+        # Graph-level feature integration
+        self.graph_integrator = nn.Sequential(
+            nn.Linear(output_dim + output_dim // 4, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
     
     def forward(
         self, 
         atom_types: Tensor,  # [B, N] atom type indices
+        coordinates: Optional[Tensor] = None,  # [B, N, 3] coordinates for distance features
         adj_list: Optional[Tensor] = None,  # [E, 2] edge indices  
         edge_batch_idx: Optional[Tensor] = None,  # [E] batch indices for edges
         masked_elements: Optional[Tensor] = None,  # [B, N] padding mask
     ) -> Tensor:
-        """Compute global graph embedding h_G.
+        """Apply message passing to update node features.
         
         Parameters
         ----------
         atom_types : Tensor, shape [B, N]
             Atom type indices for each atom
+        coordinates : Tensor, shape [B, N, 3], optional
+            Molecular coordinates for distance-based edge features
         adj_list : Tensor, shape [E, 2], optional
-            Edge connectivity (bond pairs)
+            Edge connectivity (bond pairs) - required for message passing
         edge_batch_idx : Tensor, shape [E], optional  
-            Batch index for each edge
+            Batch index for each edge - required for batched graphs
         masked_elements : Tensor, shape [B, N], optional
             True for padding atoms
             
         Returns
         -------
-        h_G : Tensor, shape [B, d]
-            Global graph embeddings for each molecule in batch
+        node_features : Tensor, shape [B, N, output_dim]
+            Updated node features after message passing
         """
-        B = atom_types.shape[0]
+        B, N = atom_types.shape
         
-        if self.graph_embed_dim == 0:
-            # Return zero-dimensional embedding
-            return torch.zeros(B, 0, device=atom_types.device)
+        # Ensure atom_types is on the same device as the embedder
+        embedder_device = next(self.atom_embedder.parameters()).device
+        atom_types = atom_types.to(embedder_device)
         
-        # Ensure atom_types is on the same device as the embedding layer
-        if self.atom_embedder is not None:
-            device = next(self.atom_embedder.parameters()).device
-            atom_types = atom_types.to(device)
-            if masked_elements is not None:
-                masked_elements = masked_elements.to(device)
-            if adj_list is not None:
-                adj_list = adj_list.to(device)
-            if edge_batch_idx is not None:
-                edge_batch_idx = edge_batch_idx.to(device)
-            
-        # Embed atom types
-        atom_embeds = self.atom_embedder(atom_types)  # [B, N, atom_embed_dim]
-        
-        # Mask out padding atoms
+        # Move other tensors to the same device if provided
+        if coordinates is not None:
+            coordinates = coordinates.to(embedder_device)
+        if adj_list is not None:
+            adj_list = adj_list.to(embedder_device)
+        if edge_batch_idx is not None:
+            edge_batch_idx = edge_batch_idx.to(embedder_device)
         if masked_elements is not None:
-            atom_embeds = atom_embeds * (~masked_elements).unsqueeze(-1)
+            masked_elements = masked_elements.to(embedder_device)
         
-        # Aggregate to global representation
-        if self.use_bonds and adj_list is not None and edge_batch_idx is not None:
-            # Include bond information
-            h_mol = self._aggregate_with_bonds(
-                atom_embeds, adj_list, edge_batch_idx, masked_elements
+        # Initial atom embeddings
+        h = self.atom_embedder(atom_types)  # [B, N, atom_embed_dim]
+        
+        # Apply message-passing layers
+        for layer in self.mp_layers:
+            h = layer(
+                node_features=h,
+                coordinates=coordinates,
+                adj_list=adj_list,
+                edge_batch_idx=edge_batch_idx,
+                masked_elements=masked_elements
             )
-        else:
-            # Simple atom-only aggregation  
-            h_mol = self._aggregate_atoms_only(atom_embeds, masked_elements)
             
-        # Pass through graph encoder
-        h_G = self.graph_encoder(h_mol)  # [B, graph_embed_dim]
-        
-        return h_G
-    
-    def _aggregate_atoms_only(
-        self, 
-        atom_embeds: Tensor,  # [B, N, atom_embed_dim]
-        masked_elements: Optional[Tensor] = None,  # [B, N]
-    ) -> Tensor:
-        """Simple mean aggregation over atoms."""
+        # Global graph pooling (simple mean pooling over valid nodes)
         if masked_elements is not None:
-            # Count non-masked atoms for proper averaging
-            counts = (~masked_elements).sum(dim=1, keepdim=True).float()  # [B, 1]
-            counts = torch.clamp(counts, min=1.0)  # Avoid division by zero
-            h_mol = atom_embeds.sum(dim=1) / counts  # [B, atom_embed_dim]
+            # Mask out padding before pooling
+            valid_mask = (~masked_elements).unsqueeze(-1).float()  # [B, N, 1]
+            masked_h = h * valid_mask
+            valid_counts = valid_mask.sum(dim=1, keepdim=True)  # [B, 1, 1]
+            global_features = masked_h.sum(dim=1, keepdim=True) / (valid_counts + 1e-8)  # [B, 1, output_dim]
         else:
-            h_mol = atom_embeds.mean(dim=1)  # [B, atom_embed_dim]
+            global_features = h.mean(dim=1, keepdim=True)  # [B, 1, output_dim]
+            
+        # Process global features
+        global_features = self.global_pool(global_features)  # [B, 1, output_dim//4]
         
-        return h_mol
+        # Broadcast global features to all nodes
+        global_features_broadcast = global_features.expand(B, N, -1)  # [B, N, output_dim//4]
+        
+        # Integrate local and global features
+        combined_features = torch.cat([h, global_features_broadcast], dim=-1)  # [B, N, output_dim + output_dim//4]
+        h = self.graph_integrator(combined_features)  # [B, N, output_dim]
+            
+        return h
+
+
+class MessagePassingLayer(nn.Module):
+    """Single message-passing layer with residual connections and layer norm.
     
-    def _aggregate_with_bonds(
+    Implements: h_i^{l+1} = LayerNorm(h_i^l + ReLU(W * (h_i^l + AGG_j(M(h_i^l, h_j^l, e_ij)))))
+    where AGG is sum aggregation and M processes node pairs with edge features.
+    """
+    
+    def __init__(self, input_dim: int, output_dim: int):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        
+        # Message function: combine source, target, and edge features
+        self.message_mlp = nn.Sequential(
+            nn.Linear(2 * input_dim + 1, output_dim),  # +1 for distance
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        
+        # Update function: combine original features with aggregated messages
+        self.update_mlp = nn.Sequential(
+            nn.Linear(input_dim + output_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        
+        # Residual projection if dimensions don't match
+        self.residual_proj = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
+        
+        # Layer normalization for stable training
+        self.layer_norm = nn.LayerNorm(output_dim)
+    
+    def forward(
         self,
-        atom_embeds: Tensor,  # [B, N, atom_embed_dim] 
-        adj_list: Tensor,  # [E, 2]
-        edge_batch_idx: Tensor,  # [E]
+        node_features: Tensor,  # [B, N, input_dim]
+        coordinates: Optional[Tensor] = None,  # [B, N, 3] for distance features
+        adj_list: Optional[Tensor] = None,  # [E, 2]
+        edge_batch_idx: Optional[Tensor] = None,  # [E]
         masked_elements: Optional[Tensor] = None,  # [B, N]
     ) -> Tensor:
-        """Aggregate with bond information included."""
-        B = atom_embeds.shape[0]
+        """Apply one message-passing step with distance-based edge features."""
+        B, N, D = node_features.shape
+        device = node_features.device
         
-        # For now, use simple atom aggregation + bond count feature
-        h_atoms = self._aggregate_atoms_only(atom_embeds, masked_elements)
+        if adj_list is None or edge_batch_idx is None:
+            # No edges provided - just apply self-transformation
+            return self.layer_norm(
+                self.update_mlp(
+                    torch.cat([node_features, torch.zeros(B, N, self.output_dim, device=device)], dim=-1)
+                ) + self.residual_proj(node_features)
+            )
         
-        # Add simple bond statistics
-        bond_counts = torch.zeros(B, device=atom_embeds.device)
-        for b in range(B):
-            bond_counts[b] = (edge_batch_idx == b).sum().float()
+        # Flatten node features for edge indexing: [B*N, D]
+        h_flat = node_features.view(-1, D)
         
-        # Simple bond features (can be made more sophisticated)
-        bond_features = torch.zeros(B, 16, device=atom_embeds.device)
-        bond_features[:, 0] = bond_counts  # Total bond count
+        # Ensure edge_batch_idx and adj_list have matching first dimension
+        E = adj_list.shape[0]
+        if edge_batch_idx.shape[0] != E:
+            raise RuntimeError(
+                f"Edge batch index size {edge_batch_idx.shape[0]} doesn't match "
+                f"adjacency list size {E}. Expected edge_batch_idx to have {E} elements."
+            )
         
-        # Concatenate atom and bond features
-        h_mol = torch.cat([h_atoms, bond_features], dim=-1)
+        # Convert batched edge indices to global indices
+        global_edge_index = adj_list.clone()  # [E, 2]
+        batch_offset = edge_batch_idx * N  # [E]
+        global_edge_index[:, 0] += batch_offset  # source nodes
+        global_edge_index[:, 1] += batch_offset  # target nodes
         
-        return h_mol 
+        # Ensure indices are within bounds
+        max_global_idx = B * N - 1
+        if global_edge_index.max() > max_global_idx:
+            raise RuntimeError(
+                f"Global edge index {global_edge_index.max()} exceeds "
+                f"maximum allowed index {max_global_idx} for {B} batches of {N} nodes."
+            )
+        
+        # Extract source and target node features
+        src_idx = global_edge_index[:, 0]  # [E]
+        tgt_idx = global_edge_index[:, 1]  # [E]
+        
+        h_src = h_flat[src_idx]  # [E, D]
+        h_tgt = h_flat[tgt_idx]  # [E, D]
+        
+        # Compute edge features (distance if coordinates provided)
+        edge_features = torch.ones(E, 1, device=device)  # Default feature
+        if coordinates is not None:
+            coords_flat = coordinates.view(-1, 3)  # [B*N, 3]
+            src_coords = coords_flat[src_idx]  # [E, 3]
+            tgt_coords = coords_flat[tgt_idx]  # [E, 3]
+            distances = torch.norm(src_coords - tgt_coords, dim=-1, keepdim=True)  # [E, 1]
+            edge_features = distances
+        
+        # Compute messages: combine node features with edge features
+        edge_input = torch.cat([h_src, h_tgt, edge_features], dim=-1)  # [E, 2*D + 1]
+        messages = self.message_mlp(edge_input)  # [E, output_dim]
+        
+        # Aggregate messages for each node (sum aggregation)
+        aggregated = torch.zeros(B * N, messages.shape[-1], device=device)
+        aggregated.index_add_(0, tgt_idx, messages)  # Add messages to target nodes
+        
+        # Reshape back to [B, N, output_dim]
+        aggregated = aggregated.view(B, N, -1)
+        
+        # Update: combine original features with aggregated messages
+        combined = torch.cat([node_features, aggregated], dim=-1)
+        updated = self.update_mlp(combined)
+        
+        # Apply padding mask
+        if masked_elements is not None:
+            updated = updated * (~masked_elements).unsqueeze(-1).float()
+            
+        # Apply residual connection and layer normalization
+        updated = self.layer_norm(updated + self.residual_proj(node_features))
+        
+        return updated 

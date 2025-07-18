@@ -90,7 +90,7 @@ def naive_acceptance(
 @torch.no_grad()
 def flow_acceptance(
     loader: DataLoader,
-    model: PTSwapFlow | PTSwapGraphFlow,
+    model: PTSwapFlow | PTSwapGraphFlow,  # Note: PTSwapTransformerFlow will be added when imported
     base_low: Any,
     base_high: Any,
     device: str = "cpu",
@@ -124,8 +124,9 @@ def flow_acceptance(
         x_high = batch["target_coords"].to(model_device)
 
         # Forward / inverse transforms + log‐dets
-        if isinstance(model, PTSwapGraphFlow):
-            # Graph-conditioned flow requires additional molecular data
+        from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+        if isinstance(model, (PTSwapGraphFlow, PTSwapTransformerFlow)):
+            # Graph/transformer-conditioned flow requires additional molecular data
             atom_types = batch["atom_types"].to(model_device)
             adj_list = batch.get("adj_list")
             edge_batch_idx = batch.get("edge_batch_idx")
@@ -138,7 +139,7 @@ def flow_acceptance(
             if masked_elements is not None:
                 masked_elements = masked_elements.to(model_device)
             
-            # Graph flow uses different interface
+            # Graph/transformer flow uses different interface
             y_high, log_det_f = model.forward(
                 coordinates=x_low,
                 atom_types=atom_types,

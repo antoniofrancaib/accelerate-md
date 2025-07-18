@@ -1,8 +1,10 @@
-"""Graph-conditioned normalizing flow for PT swap proposals.
+"""Dimension-agnostic message-passing flow for PT swap proposals.
 
-This module implements the complete graph-conditioned architecture that maps
-molecular_structure + coordinates to coordinates using graph neural networks
-and distance-based attention mechanisms.
+This module implements the supervisor's suggested approach:
+- Message passing over molecular bonds (edges)
+- Atom types (C,H,O,N) as node features
+- No complex attention mechanisms
+- Fully dimension-agnostic (works for any molecular size)
 """
 
 from __future__ import annotations
@@ -13,39 +15,32 @@ from torch import Tensor
 from typing import Optional, List, Tuple, Dict, Any
 
 from ..targets import build_target
-from .graph_coupling_layer import GraphNVPCouplingLayer
+from .graph_coupling_layer import MessagePassingCouplingLayer
 
 __all__ = ["PTSwapGraphFlow"]
 
 
 class PTSwapGraphFlow(nn.Module):
-    """Graph-conditioned normalizing flow for PT swap proposals.
+    """Dimension-agnostic message-passing flow for PT swap proposals.
     
-    Implements the complete Flow-PT architecture with:
-    - Global graph embedding h_G = GraphEmb(G)
-    - Node features h_i = f_θ(x_i, a_i, h_G) 
-    - Distance-based attention AGG_θ with w_ij = exp(-||x_i - x_j||^2 / σ^2)
-    - Sequential coupling layers with alternating phases
-    
-    This is the enriched representation architecture expected to work better
-    than simple coordinate-to-coordinate flows.
+    Implements your supervisor's suggested architecture:
+    - Simple message passing on molecular bonds
+    - Atom types as node features (no complex embeddings)
+    - Fully size-agnostic (works for AK ↔ AA ↔ any peptide)
+    - Clean and efficient design
     
     Parameters
     ----------
     num_layers : int
-        Number of graph coupling layers
+        Number of coupling layers
     atom_vocab_size : int
         Number of unique atom types (e.g., 4 for H,C,N,O)
     atom_embed_dim : int
         Dimension of atom type embeddings
-    graph_embed_dim : int
-        Dimension of global graph embedding (0 for ablation)
-    node_feature_dim : int
-        Dimension of per-atom features
     hidden_dim : int
-        Hidden dimension for MLPs
-    attention_lengthscales : List[float]
-        Attention lengthscales for multi-head mechanism
+        Hidden dimension for message passing and MLPs
+    num_mp_layers : int
+        Number of message-passing layers per coupling layer
     source_temperature : float
         Source temperature for physics base distribution
     target_temperature : float  
@@ -62,11 +57,9 @@ class PTSwapGraphFlow(nn.Module):
         self,
         num_layers: int = 8,
         atom_vocab_size: int = 4,
-        atom_embed_dim: int = 32,
-        graph_embed_dim: int = 64,
-        node_feature_dim: int = 64,
+        atom_embed_dim: int = 64,
         hidden_dim: int = 128,
-        attention_lengthscales: List[float] = [1.0, 2.0, 4.0],
+        num_mp_layers: int = 2,
         source_temperature: float = 1.0,
         target_temperature: float = 1.5,
         target_name: str = "aldp",
@@ -77,7 +70,6 @@ class PTSwapGraphFlow(nn.Module):
         
         self.num_layers = num_layers
         self.atom_vocab_size = atom_vocab_size
-        self.graph_embed_dim = graph_embed_dim
         self.source_temp = source_temperature
         self.target_temp = target_temperature
         
@@ -103,38 +95,38 @@ class PTSwapGraphFlow(nn.Module):
         self.base_low = self.source_target   # Low temperature base distribution
         self.base_high = self.target_target  # High temperature base distribution
         
-        # Graph coupling layers with alternating phases
+        # Message-passing coupling layers with alternating phases
         self.coupling_layers = nn.ModuleList()
         for layer_idx in range(num_layers):
             phase = layer_idx % 2  # Alternate between 0 and 1
             
-            layer = GraphNVPCouplingLayer(
+            layer = MessagePassingCouplingLayer(
                 phase=phase,
                 atom_vocab_size=atom_vocab_size,
                 atom_embed_dim=atom_embed_dim,
-                graph_embed_dim=graph_embed_dim,
-                node_feature_dim=node_feature_dim,
                 hidden_dim=hidden_dim,
-                attention_lengthscales=attention_lengthscales,
-                use_graph_embedding=(graph_embed_dim > 0),
+                num_mp_layers=num_mp_layers,
             )
             self.coupling_layers.append(layer)
+            
+        # Move entire model to specified device
+        self.to(device)
     
     def forward(
         self,
         coordinates: Tensor,  # [B, N, 3] input coordinates
-        atom_types: Optional[Tensor] = None,   # [B, N] atom type indices (required for graph flow)
-        adj_list: Optional[Tensor] = None,  # [E, 2] edge connectivity (required for graph flow)
+        atom_types: Optional[Tensor] = None,   # [B, N] atom type indices (required)
+        adj_list: Optional[Tensor] = None,  # [E, 2] edge connectivity (required)
         edge_batch_idx: Optional[Tensor] = None,  # [E] batch indices
         masked_elements: Optional[Tensor] = None,  # [B, N] padding mask
         reverse: bool = False,
     ) -> Tuple[Tensor, Tensor]:
-        """Apply graph-conditioned flow transformation.
+        """Apply dimension-agnostic message-passing flow transformation.
         
         Parameters
         ----------
         coordinates : Tensor, shape [B, N, 3]
-            Input molecular coordinates
+            Input molecular coordinates (N can be any size!)
         atom_types : Tensor, shape [B, N]
             Atom type indices (required for molecular structure)
         adj_list : Tensor, shape [E, 2]
@@ -153,18 +145,25 @@ class PTSwapGraphFlow(nn.Module):
         total_log_det : Tensor, shape [B]
             Total log-determinant across all layers
         """
-        # Validate required inputs for graph-conditioned flow
+        # Validate required inputs
         if atom_types is None:
-            raise ValueError("atom_types is required for graph-conditioned flow. Dataset should provide real molecular data.")
+            raise ValueError("atom_types is required for message-passing flow. Dataset should provide real molecular data.")
         if adj_list is None:
-            raise ValueError("adj_list is required for graph-conditioned flow. Dataset should provide real molecular bond connectivity.")
+            raise ValueError("adj_list is required for message-passing flow. Dataset should provide real molecular bond connectivity.")
         
         # Generate edge batch indices if not provided
         if edge_batch_idx is None:
             B = coordinates.shape[0]
-            n_edges_per_mol = adj_list.shape[0]  # Assume adj_list is for single molecule
-            # For batch processing: same molecule topology replicated B times
-            # [0,0,...,0, 1,1,...,1, 2,2,...,2, ...] where each group has n_edges_per_mol entries
+            n_edges_per_mol = adj_list.shape[0]  # Edges in the single molecule template
+            
+            # Create batched adjacency list: replicate single molecule for each batch
+            # adj_list is [E, 2] for single molecule -> [B*E, 2] for batch
+            adj_list_batched = torch.cat([adj_list for _ in range(B)], dim=0)
+            
+            # Update adj_list to use the batched version
+            adj_list = adj_list_batched
+            
+            # Create proper edge batch indices: B copies of n_edges_per_mol
             edge_batch_idx = torch.repeat_interleave(
                 torch.arange(B, device=coordinates.device), 
                 n_edges_per_mol
@@ -193,7 +192,14 @@ class PTSwapGraphFlow(nn.Module):
             
         return current_coords, total_log_det
     
-    def inverse(self, coordinates: Tensor, atom_types: Tensor = None, adj_list: Tensor = None) -> Tuple[Tensor, Tensor]:
+    def inverse(
+        self, 
+        coordinates: Tensor, 
+        atom_types: Optional[Tensor] = None, 
+        adj_list: Optional[Tensor] = None,
+        edge_batch_idx: Optional[Tensor] = None,
+        masked_elements: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
         """Inverse flow transformation for trainer compatibility.
         
         Parameters
@@ -204,6 +210,10 @@ class PTSwapGraphFlow(nn.Module):
             Atom type indices (required for graph flow)
         adj_list : Tensor, shape [E, 2], optional  
             Edge connectivity (required for graph flow)
+        edge_batch_idx : Tensor, shape [E], optional
+            Batch indices for edges (auto-generated if None)
+        masked_elements : Tensor, shape [B, N], optional
+            Padding mask (True for padding atoms)
             
         Returns
         -------
@@ -212,21 +222,11 @@ class PTSwapGraphFlow(nn.Module):
         total_log_det : Tensor, shape [B]
             Total log-determinant
         """
-        # For trainer compatibility: if atom_types/adj_list not provided, 
-        # assume they will be provided in the forward call through the training batch
         if atom_types is None or adj_list is None:
             raise ValueError(
-                "Graph flow requires atom_types and adj_list. "
+                "Message-passing flow requires atom_types and adj_list. "
                 "Update trainer to pass molecular data from batch."
             )
-        
-        # Generate edge batch indices
-        B = coordinates.shape[0]
-        n_edges = adj_list.shape[0]
-        edge_batch_idx = torch.repeat_interleave(
-            torch.arange(B, device=coordinates.device), 
-            n_edges
-        )
         
         # Call forward with reverse=True
         return self.forward(
@@ -234,46 +234,44 @@ class PTSwapGraphFlow(nn.Module):
             atom_types=atom_types,
             adj_list=adj_list,
             edge_batch_idx=edge_batch_idx,
-            masked_elements=None,
+            masked_elements=masked_elements,
             reverse=True,
         )
     
     def log_likelihood(
         self,
-        x_coords: Tensor,  # [B, N, 3] source configuration (for interface compatibility)
-        y_coords: Tensor,  # [B, N, 3] target configuration (for interface compatibility)
-        reverse: bool = False,  # direction flag (for interface compatibility)
-        # Additional graph-specific arguments (optional for compatibility)
-        source_coords: Optional[Tensor] = None,  
-        target_coords: Optional[Tensor] = None,
+        x_coords: Tensor,  # [B, N, 3] source configuration
+        y_coords: Tensor,  # [B, N, 3] target configuration
+        reverse: bool = False,  # direction flag
+        # Molecular data (required)
         atom_types: Optional[Tensor] = None,
         adj_list: Optional[Tensor] = None,
         edge_batch_idx: Optional[Tensor] = None,
         masked_elements: Optional[Tensor] = None,
+        # Legacy interface compatibility
+        source_coords: Optional[Tensor] = None,  
+        target_coords: Optional[Tensor] = None,
         direction: Optional[str] = None,
     ) -> Tensor:
         """Compute log-likelihood for bidirectional training.
         
-        Compatible with both old interface (x_coords, y_coords, reverse) 
-        and new interface (source_coords, target_coords, direction).
-        
         Parameters
         ----------
         x_coords : Tensor, shape [B, N, 3]
-            Source coordinates (old interface)
+            Source coordinates
         y_coords : Tensor, shape [B, N, 3]  
-            Target coordinates (old interface)
+            Target coordinates
         reverse : bool
-            Direction flag (old interface)
-        source_coords, target_coords, atom_types, etc. : optional
-            New interface arguments
+            Direction flag
+        atom_types, adj_list, etc. : Tensor
+            Required molecular data
             
         Returns
         -------
         log_likelihood : Tensor, shape [B]
             Log-likelihood values for each sample
         """
-        # Interface conversion: handle both old and new calling conventions
+        # Interface conversion
         if source_coords is None:
             source_coords = x_coords
         if target_coords is None:
@@ -283,9 +281,9 @@ class PTSwapGraphFlow(nn.Module):
             
         # Validate required molecular data
         if atom_types is None:
-            raise ValueError("atom_types is required for graph-conditioned flow. Dataset should provide real molecular data.")
+            raise ValueError("atom_types is required for message-passing flow. Dataset should provide real molecular data.")
         if adj_list is None:
-            raise ValueError("adj_list is required for graph-conditioned flow. Dataset should provide real molecular bond connectivity.")
+            raise ValueError("adj_list is required for message-passing flow. Dataset should provide real molecular bond connectivity.")
             
         # Generate edge batch indices if not provided
         if edge_batch_idx is None:
@@ -295,9 +293,9 @@ class PTSwapGraphFlow(nn.Module):
                 torch.arange(B, device=source_coords.device), 
                 n_edges
             )
+            
         if direction == "forward":
             # Forward: log p(target | source) = log p_low(f^-1(target)) + log|det J_f^-1|
-            # Use inverse mapping: target → reconstructed source, evaluate with low-temp base
             reconstructed_coords, log_det = self.forward(
                 coordinates=target_coords,  # Apply inverse to target
                 atom_types=atom_types,
@@ -318,7 +316,6 @@ class PTSwapGraphFlow(nn.Module):
             
         elif direction == "reverse":
             # Reverse: log p(source | target) = log p_high(f(source)) + log|det J_f|
-            # Use forward mapping: source → reconstructed target, evaluate with high-temp base
             reconstructed_coords, log_det = self.forward(
                 coordinates=source_coords,  # Apply forward to source
                 atom_types=atom_types,
@@ -402,10 +399,10 @@ class PTSwapGraphFlow(nn.Module):
     def _log_boltzmann_masked(
         self,
         coordinates: Tensor,  # [B, N, 3]
-        target_distribution,  # AldpBoltzmann instance (source_target or target_target)
+        target_distribution,  # AldpBoltzmann instance
         masked_elements: Optional[Tensor] = None,  # [B, N]
     ) -> Tensor:
-        """Compute masked Boltzmann log-probability using the specified target distribution."""
+        """Compute masked Boltzmann log-probability."""
         B = coordinates.shape[0]
         
         # Flatten coordinates while masking padding
@@ -415,7 +412,7 @@ class PTSwapGraphFlow(nn.Module):
         else:
             coords_flat = coordinates.view(B, -1)
             
-        # Boltzmann log-probability using the provided target distribution
+        # Boltzmann log-probability
         log_probs = []
         for i in range(B):
             if masked_elements is not None:
@@ -433,7 +430,7 @@ class PTSwapGraphFlow(nn.Module):
         """String representation."""
         return (
             f"PTSwapGraphFlow(layers={self.num_layers}, "
-            f"graph_embed_dim={self.graph_embed_dim}, "
+            f"message_passing, "
             f"T_source={self.source_temp:.3f}, "
             f"T_target={self.target_temp:.3f})"
         ) 

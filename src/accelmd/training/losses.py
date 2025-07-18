@@ -37,11 +37,12 @@ def bidirectional_nll(
         keeps unit-tests untouched).
     """
 
-    # Check if this is a graph flow that needs molecular data
+    # Check if this is a flow that needs molecular data
     from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
+    from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
     molecular_kwargs = {}
-    if isinstance(model, PTSwapGraphFlow):
-        # Only pass molecular data to graph flows
+    if isinstance(model, (PTSwapGraphFlow, PTSwapTransformerFlow)):
+        # Pass molecular data to graph and transformer flows
         if "atom_types" in batch:
             molecular_kwargs["atom_types"] = batch["atom_types"]
         if "adj_list" in batch:
@@ -149,9 +150,10 @@ def acceptance_loss(
     x_low = batch["source_coords"].to(device)
     x_high = batch["target_coords"].to(device)
 
-    # Check if this is a graph flow that needs molecular data
+    # Check if this is a flow that needs molecular data
     from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
-    if isinstance(model, PTSwapGraphFlow):
+    from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+    if isinstance(model, (PTSwapGraphFlow, PTSwapTransformerFlow)):
         molecular_kwargs = {}
         if "atom_types" in batch:
             molecular_kwargs["atom_types"] = batch["atom_types"].to(device)
@@ -162,7 +164,7 @@ def acceptance_loss(
         if "masked_elements" in batch:
             molecular_kwargs["masked_elements"] = batch["masked_elements"].to(device)
         
-        # Flow transforms for graph model
+        # Flow transforms for graph/transformer model
         y_high, log_det_f = model.forward(x_low, **molecular_kwargs)   # low → high
         y_low, log_det_inv = model.inverse(x_high, **molecular_kwargs) # high → low
     else:

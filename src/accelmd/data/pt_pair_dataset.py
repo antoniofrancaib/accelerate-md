@@ -226,7 +226,7 @@ class PTTemperaturePairDataset(Dataset):
         Returns
         -------
         collated : Dict[str, torch.Tensor]
-            Batched data with proper edge batch indices
+            Batched data with proper edge batch indices for message passing
         """
         batch_size = len(batch)
         
@@ -237,9 +237,12 @@ class PTTemperaturePairDataset(Dataset):
         # Atom types are the same for all molecules, so we just stack them
         atom_types = torch.stack([sample["atom_types"] for sample in batch])
         
-        # Adjacency list is the same for all molecules, but we need to create edge batch indices
-        adj_list = batch[0]["adj_list"]  # Same for all molecules
+        # For message passing: replicate adjacency list for each molecule in batch
+        adj_list = batch[0]["adj_list"]  # Same topology for all molecules
         n_edges = adj_list.shape[0]
+        
+        # Replicate adj_list for each molecule in the batch
+        adj_list_batched = torch.cat([adj_list for _ in range(batch_size)], dim=0)
         
         # Create edge batch indices: [0, 0, 0, ..., 1, 1, 1, ..., B-1, B-1, B-1]
         edge_batch_idx = torch.repeat_interleave(
@@ -250,6 +253,6 @@ class PTTemperaturePairDataset(Dataset):
             "source_coords": source_coords,
             "target_coords": target_coords,
             "atom_types": atom_types,
-            "adj_list": adj_list,
+            "adj_list": adj_list_batched,  # Now properly batched
             "edge_batch_idx": edge_batch_idx,
         } 

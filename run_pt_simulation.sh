@@ -1,23 +1,17 @@
 #!/bin/bash
 
-# Extract peptide name from run_pt_simulation.py
-PEPTIDE_NAME=$(python -c "
-import sys; sys.path.append('src')
-exec(open('run_pt_simulation.py').read())
-print(config['name'])
-")
-
-#SBATCH -J pt_simulation_${PEPTIDE_NAME}
-#SBATCH -A MLMI-jaf98-SL2-GPU
+########## SBATCH directives begin ############################
+#SBATCH -J pt_simulation            # Job name
+#SBATCH -A MLMI-jaf98-SL2-GPU       # Account / project
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=12G
-#SBATCH --time=24:00:00
-#SBATCH --gres=gpu:1
-#SBATCH --output=logs/pt_simulation_${PEPTIDE_NAME}_%j.out
-#SBATCH --error=logs/pt_simulation_${PEPTIDE_NAME}_%j.err
-#SBATCH -p ampere
+#SBATCH --cpus-per-task=4           # CPU cores per task
+#SBATCH --gres=gpu:1                # Request 1 GPU
+#SBATCH --time=24:00:00             # Wall-time
+#SBATCH --output=logs/pt_simulation_%j.out
+#SBATCH --error=logs/pt_simulation_%j.err
+#SBATCH -p ampere                   # CSD3 GPU partition
+########## SBATCH directives end ##############################
 
 # ==== Environment setup ====
 . /etc/profile.d/modules.sh
@@ -30,50 +24,38 @@ conda activate accelmd
 WORKDIR="$SLURM_SUBMIT_DIR"
 cd "$WORKDIR"
 
-echo "JobID: $SLURM_JOB_ID"
-echo "Running on $(hostname)"
-echo "Working directory: $(pwd)"
+echo "JobID       : $SLURM_JOB_ID"
+echo "Hostname    : $(hostname)"
+echo "Working dir : $(pwd)"
 
 mkdir -p logs
-mkdir -p results
-mkdir -p plots/${PEPTIDE_NAME}
 
-# Add project root to PYTHONPATH so run_pt_simulation.py finds accelmd
-export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+# Add project root to PYTHONPATH so imports resolve
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-# Display GPU info and verify CUDA availability
+# --------- User-configurable section ----------
+NAME="${NAME:-AK}"          # Peptide name (e.g., AK, GA, KW)
+TOTAL_STEPS="${STEPS:-1000}"  # Override number of PT steps
+# ---------------------------------------------
+
+# Display GPU info (optional)
 nvidia-smi || true
-echo ""
-echo "CUDA device check:"
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
-echo ""
 
 echo "===================================================="
-echo "Launching PT simulation for ${PEPTIDE_NAME} peptide"
-echo "Using device: $(python -c 'import torch; print(\"cuda\" if torch.cuda.is_available() else \"cpu\")')"
-echo "Output will be saved to:"
-echo "  - PT trajectory: results/pt_${PEPTIDE_NAME}.pt"
-echo "  - Ramachandran plots: plots/${PEPTIDE_NAME}/"
+echo "Launching PT simulation"
+echo "Peptide        : $NAME"
+echo "Total steps    : $TOTAL_STEPS"
 echo "===================================================="
 
-# Run PT simulation - this will create results/pt_AK.pt and plots/AK/ directory
-stdbuf -oL python -u run_pt_simulation.py
-
-# Verify outputs were created
-if [ -f "results/pt_${PEPTIDE_NAME}.pt" ]; then
-    echo "✅ PT trajectory saved to results/pt_${PEPTIDE_NAME}.pt"
-    ls -lh results/pt_${PEPTIDE_NAME}.pt
-else
-    echo "❌ Expected output results/pt_${PEPTIDE_NAME}.pt not found"
-fi
-
-if [ -d "plots/${PEPTIDE_NAME}" ]; then
-    echo "✅ Ramachandran plots directory created at plots/${PEPTIDE_NAME}/"
-    ls -la plots/${PEPTIDE_NAME}/
-else
-    echo "❌ Expected plots directory plots/${PEPTIDE_NAME}/ not found"
-fi
+# Run the simulation
+stdbuf -oL python -u run_pt_simulation.py <<PY
+import run_pt_simulation as rps
+cfg = rps.config.copy()
+cfg["name"] = "$NAME"
+cfg["num_steps"] = int("$TOTAL_STEPS")
+rps.main(cfg)
+PY
 
 echo "===================================================="
-echo "PT simulation completed."
+echo "Simulation completed.  Check logs/ and results/ for artefacts."
 echo "====================================================" 

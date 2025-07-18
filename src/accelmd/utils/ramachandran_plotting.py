@@ -17,7 +17,25 @@ from matplotlib.ticker import MaxNLocator
 from .config import load_config, create_run_config, setup_device
 from ..data.pt_pair_dataset import PTTemperaturePairDataset
 from ..flows.pt_swap_flow import PTSwapFlow
-from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
+
+# Conditional imports for advanced architectures
+try:
+    from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
+    GRAPH_AVAILABLE = True
+except ImportError:
+    PTSwapGraphFlow = None
+    GRAPH_AVAILABLE = False
+
+try:
+    from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+    from ..flows.transformer_block import TransformerConfig
+    from ..flows.rff_position_encoder import RFFPositionEncoderConfig
+    TRANSFORMER_AVAILABLE = True
+except ImportError:
+    PTSwapTransformerFlow = None
+    TransformerConfig = None
+    RFFPositionEncoderConfig = None
+    TRANSFORMER_AVAILABLE = False
 from ..data.molecular_data import filter_chirality
 from .plot_utils import plot_Ramachandran
 
@@ -190,19 +208,54 @@ def _build_model_from_config(config: dict, pair: Tuple[int, int], device: str):
             device=device,
         )
     elif architecture == "graph":
+        if not GRAPH_AVAILABLE:
+            raise ValueError("Graph architecture not available due to import errors")
         graph_cfg = model_cfg.get("graph", {})
         model = PTSwapGraphFlow(
             num_layers=model_cfg["flow_layers"],
             atom_vocab_size=graph_cfg.get("atom_vocab_size", 4),
             atom_embed_dim=graph_cfg.get("atom_embed_dim", 32),
-            graph_embed_dim=graph_cfg.get("graph_embed_dim", 64),
-            node_feature_dim=graph_cfg.get("node_feature_dim", 64),
-            hidden_dim=model_cfg["hidden_dim"],
-            attention_lengthscales=graph_cfg.get("attention_lengthscales", [1.0, 2.0, 4.0]),
+            hidden_dim=graph_cfg.get("hidden_dim", model_cfg["hidden_dim"]),
+            num_mp_layers=graph_cfg.get("num_mp_layers", 2),
             source_temperature=temps[pair[0]],
             target_temperature=temps[pair[1]],
             target_name=target_name,
             target_kwargs=target_kwargs_extra,
+            device=device,
+        )
+    elif architecture == "transformer":
+        if not TRANSFORMER_AVAILABLE:
+            raise ValueError("Transformer architecture not available due to import errors")
+        
+        transformer_cfg = model_cfg.get("transformer", {})
+        
+        # Create transformer configuration
+        transformer_config = TransformerConfig(
+            n_head=transformer_cfg.get("n_head", 8),
+            dim_feedforward=transformer_cfg.get("dim_feedforward", 2048),
+            dropout=0.0,  # No dropout for deterministic likelihood
+        )
+        
+        # Create RFF position encoder configuration
+        rff_config = RFFPositionEncoderConfig(
+            encoding_dim=transformer_cfg.get("rff_encoding_dim", 64),
+            scale_mean=transformer_cfg.get("rff_scale_mean", 1.0),
+            scale_stddev=transformer_cfg.get("rff_scale_stddev", 1.0),
+        )
+        
+        model = PTSwapTransformerFlow(
+            num_layers=model_cfg["flow_layers"],
+            atom_vocab_size=transformer_cfg.get("atom_vocab_size", 4),
+            atom_embed_dim=transformer_cfg.get("atom_embed_dim", 32),
+            transformer_hidden_dim=transformer_cfg.get("transformer_hidden_dim", 128),
+            mlp_hidden_layer_dims=transformer_cfg.get("mlp_hidden_layer_dims", [128, 128]),
+            num_transformer_layers=transformer_cfg.get("num_transformer_layers", 2),
+            source_temperature=temps[pair[0]],
+            target_temperature=temps[pair[1]],
+            target_name=target_name,
+            target_kwargs=target_kwargs_extra,
+            transformer_config=transformer_config,
+            rff_position_encoder_config=rff_config,
             device=device,
         )
     else:
@@ -311,20 +364,36 @@ def generate_ramachandran_grid(
             low_tensor = torch.from_numpy(coords_low_np).to(device)
             high_tensor = torch.from_numpy(coords_high_np).to(device)
 
-            # Handle both simple and graph flows
-            if isinstance(model, PTSwapGraphFlow):
+            # Handle different flow architectures
+            if GRAPH_AVAILABLE and isinstance(model, PTSwapGraphFlow):
                 # For graph flows, we need molecular data
                 sample = dataset[0]  # Get molecular data from first sample
-                atom_types = sample["atom_types"].unsqueeze(0).repeat(low_tensor.shape[0], 1).to(device)
-                adj_list = sample["adj_list"].to(device)
-                edge_batch_idx = sample.get("edge_batch_idx")
-                if edge_batch_idx is not None:
-                    edge_batch_idx = edge_batch_idx.to(device)
+                batch_size = low_tensor.shape[0]
+                atom_types = sample["atom_types"].unsqueeze(0).repeat(batch_size, 1).to(device)
+                
+                # Replicate adjacency list for batch (same as collate_fn does)
+                adj_list_single = sample["adj_list"]
+                n_edges = adj_list_single.shape[0]
+                adj_list = torch.cat([adj_list_single for _ in range(batch_size)], dim=0).to(device)
+                
+                # Create proper edge batch indices
+                edge_batch_idx = torch.repeat_interleave(
+                    torch.arange(batch_size), n_edges
+                ).to(device)
+                
+
                 
                 mapped_hi, _ = model.forward(low_tensor, atom_types=atom_types, adj_list=adj_list, edge_batch_idx=edge_batch_idx)
-                mapped_lo, _ = model.inverse(high_tensor, atom_types=atom_types, adj_list=adj_list)
+                mapped_lo, _ = model.inverse(high_tensor, atom_types=atom_types, adj_list=adj_list, edge_batch_idx=edge_batch_idx)
+            elif TRANSFORMER_AVAILABLE and isinstance(model, PTSwapTransformerFlow):
+                # For transformer flows, we need atom_types
+                sample = dataset[0]  # Get molecular data from first sample
+                atom_types = sample["atom_types"].unsqueeze(0).repeat(low_tensor.shape[0], 1).to(device)
+                
+                mapped_hi, _ = model.forward(low_tensor, atom_types=atom_types)   # low → high
+                mapped_lo, _ = model.inverse(high_tensor, atom_types=atom_types)  # high → low
             else:
-                # Simple flow
+                # Simple flow architecture
                 mapped_hi, _ = model.forward(low_tensor)   # low → high
                 mapped_lo, _ = model.inverse(high_tensor)  # high → low
 

@@ -1,7 +1,11 @@
-"""Graph-conditioned NVP coupling layer for molecular coordinates.
+"""Message-passing coupling layer for molecular coordinates.
 
-This module implements the complete graph-conditioned Real-NVP coupling layer
-according to equations (8-10) and (13-16) from the Flow-PT formulation.
+This module implements a dimension-agnostic coupling layer using message-passing
+over molecular graphs. Based on your supervisor's suggestion:
+- Direct message passing on bonds (edges)
+- Atom types as node features
+- No complex attention mechanisms
+- Fully size-agnostic
 """
 
 import torch
@@ -10,104 +14,74 @@ from torch import Tensor
 from typing import Optional
 
 from .mlp import MLP
-from .graph_embedding import GraphEmbedding
-from .attention_encoder import KernelAttentionEncoder
+from .graph_embedding import MessagePassingGNN
 
-__all__ = ["GraphNVPCouplingLayer"]
+__all__ = ["MessagePassingCouplingLayer"]
 
 
-class GraphNVPCouplingLayer(nn.Module):
-    """Graph-conditioned Real-NVP coupling layer.
+class MessagePassingCouplingLayer(nn.Module):
+    """Dimension-agnostic message-passing coupling layer.
     
-    Implements the complete Flow-PT coupling layer that combines:
-    1. Global graph embedding: h_G = GraphEmb(G)  [Eq. 13]
-    2. Node features: h_i = f_θ(x_i, a_i, h_G)  [Eq. 14] 
-    3. Attention aggregation: AGG_θ(h_1, ..., h_N)  [Eq. 15-16]
-    4. Affine transformation: x^{l+1} = s_θ ⊙ x' + t_θ  [Eq. 8]
+    Implements your supervisor's approach:
+    1. Message passing over molecular bonds to get enriched node features
+    2. Use node features to predict per-atom scale/shift parameters
+    3. Apply affine transformation to coordinates
+    
+    This is fully dimension-agnostic - works for any molecular size!
     
     Parameters
     ----------
     phase : int
-        Coupling phase (0 or 1) for dynamic masking
+        Coupling phase (0 or 1) for alternating atom masking
     atom_vocab_size : int
         Number of unique atom types
     atom_embed_dim : int
         Dimension of atom type embeddings
-    graph_embed_dim : int  
-        Dimension of global graph embedding h_G (can be 0)
-    node_feature_dim : int
-        Dimension of per-atom features h_i
     hidden_dim : int
-        Hidden dimension for MLPs
-    attention_lengthscales : list
-        Lengthscales for multi-head attention
-    use_graph_embedding : bool
-        Whether to use global graph conditioning
+        Hidden dimension for message passing and MLPs
+    num_mp_layers : int
+        Number of message-passing layers
     """
     
     def __init__(
         self,
         phase: int,  # 0 or 1 for alternating masks
         atom_vocab_size: int = 4,
-        atom_embed_dim: int = 32,
-        graph_embed_dim: int = 64,
-        node_feature_dim: int = 64,
+        atom_embed_dim: int = 64,
         hidden_dim: int = 128,
-        attention_lengthscales: list = [1.0, 2.0, 4.0],
-        use_graph_embedding: bool = True,
+        num_mp_layers: int = 2,
     ):
         super().__init__()
         self.phase = phase
-        self.use_graph_embedding = use_graph_embedding
-        self.graph_embed_dim = graph_embed_dim
-        self.node_feature_dim = node_feature_dim
         
-        # Global graph embedding module
-        if use_graph_embedding and graph_embed_dim > 0:
-            self.graph_embedder = GraphEmbedding(
-                atom_vocab_size=atom_vocab_size,
-                atom_embed_dim=atom_embed_dim,
-                graph_embed_dim=graph_embed_dim,
-                use_bonds=True,
-            )
-        else:
-            self.graph_embedder = None
-            graph_embed_dim = 0  # Override for consistency
-            
-        # Node feature network f_θ(x_i, a_i, h_G)
-        node_input_dim = 3 + atom_embed_dim + graph_embed_dim  # coords + atom + graph
-        self.atom_embedder = nn.Embedding(atom_vocab_size, atom_embed_dim)
-        self.node_network = MLP(
-            input_dim=node_input_dim,
-            out_dim=node_feature_dim,
-            hidden_layer_dims=[hidden_dim, hidden_dim],  # 2 hidden layers
+        # Message-passing network to process molecular structure
+        self.message_passing = MessagePassingGNN(
+            atom_vocab_size=atom_vocab_size,
+            atom_embed_dim=atom_embed_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_mp_layers,
+            output_dim=hidden_dim,
         )
         
-        # Attention aggregation AGG_θ
-        self.attention_encoder = KernelAttentionEncoder(
-            input_dim=node_feature_dim,
-            output_dim=hidden_dim,  # Intermediate dimension
-            lengthscales=attention_lengthscales,
-            use_value_projection=True,
-        )
+        # Networks to predict scale and shift parameters
+        # Input: message-passed features + coordinate information
+        input_dim = hidden_dim + 3  # node features + coordinates
         
-        # Scale and shift networks (s_θ and t_θ)
         self.scale_network = MLP(
-            input_dim=hidden_dim,
-            out_dim=3,  # Scale per coordinate
-            hidden_layer_dims=[hidden_dim],  # 1 hidden layer
+            input_dim=input_dim,
+            out_dim=3,  # Scale per coordinate (x, y, z)
+            hidden_layer_dims=[hidden_dim],
         )
         
         self.shift_network = MLP(
-            input_dim=hidden_dim,
-            out_dim=3,  # Shift per coordinate  
-            hidden_layer_dims=[hidden_dim],  # 1 hidden layer
+            input_dim=input_dim,
+            out_dim=3,  # Shift per coordinate (x, y, z)
+            hidden_layer_dims=[hidden_dim],
         )
         
-        # Initialize scale network to produce small values initially
+        # Initialize scale network for stable training
         with torch.no_grad():
             if hasattr(self.scale_network._layers, '__getitem__'):
-                # Zero-initialize final layer of scale network for stable init
                 final_layer = self.scale_network._layers[-1]
                 if hasattr(final_layer, 'weight'):
                     torch.nn.init.zeros_(final_layer.weight)
@@ -123,7 +97,7 @@ class GraphNVPCouplingLayer(nn.Module):
         masked_elements: Optional[Tensor] = None,  # [B, N] padding mask
         reverse: bool = False,
     ) -> tuple[Tensor, Tensor]:
-        """Forward/reverse coupling transformation.
+        """Apply dimension-agnostic message-passing coupling transformation.
         
         Parameters
         ----------
@@ -132,7 +106,7 @@ class GraphNVPCouplingLayer(nn.Module):
         atom_types : Tensor, shape [B, N] 
             Atom type indices
         adj_list : Tensor, shape [E, 2], optional
-            Edge connectivity
+            Edge connectivity (molecular bonds)
         edge_batch_idx : Tensor, shape [E], optional
             Batch indices for edges
         masked_elements : Tensor, shape [B, N], optional
@@ -148,11 +122,9 @@ class GraphNVPCouplingLayer(nn.Module):
             Log-determinant of Jacobian
         """
         B, N, _ = coordinates.shape
-        
-        # Use device from coordinates (should already be on correct device)
         device = coordinates.device
         
-        # Generate dynamic coupling mask
+        # Generate coupling mask (alternating atoms)
         atom_indices = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)  # [B, N]
         coupling_mask = (atom_indices % 2 == self.phase)  # [B, N] boolean mask
         
@@ -160,48 +132,36 @@ class GraphNVPCouplingLayer(nn.Module):
         if masked_elements is not None:
             coupling_mask = coupling_mask & (~masked_elements)
         
-        # Split coordinates: x' (unchanged) and x (to be transformed)
+        # Split coordinates: unchanged vs to-be-transformed
         unchanged_mask = ~coupling_mask  # [B, N]
-        x_prime = coordinates * unchanged_mask.unsqueeze(-1)  # [B, N, 3]
         
-        # Step 1: Global graph embedding h_G = GraphEmb(G)
-        if self.graph_embedder is not None:
-            h_G = self.graph_embedder(
-                atom_types=atom_types,
-                adj_list=adj_list,
-                edge_batch_idx=edge_batch_idx, 
-                masked_elements=masked_elements,
-            )  # [B, graph_embed_dim]
-            # Broadcast to per-atom
-            h_G_broadcast = h_G.unsqueeze(1).expand(-1, N, -1)  # [B, N, graph_embed_dim]
-        else:
-            h_G_broadcast = torch.zeros(B, N, 0, device=device)  # [B, N, 0]
-            
-        # Step 2: Per-atom features h_i = f_θ(x_i, a_i, h_G)
-        atom_embeds = self.atom_embedder(atom_types)  # [B, N, atom_embed_dim]
-        node_inputs = torch.cat([
-            x_prime,  # Current coordinates (unchanged part)
-            atom_embeds,  # Atom type embeddings  
-            h_G_broadcast,  # Global graph context
-        ], dim=-1)  # [B, N, 3 + atom_embed_dim + graph_embed_dim]
-        
-        h_nodes = self.node_network(node_inputs)  # [B, N, node_feature_dim]
-        
-        # Step 3: Attention aggregation AGG_θ(h_1, ..., h_N) 
-        aggregated_features = self.attention_encoder(
-            node_features=h_nodes,
-            coordinates=x_prime,  # Use unchanged coordinates for attention
+        # Step 1: Message passing to get enriched node features
+        node_features = self.message_passing(
+            atom_types=atom_types,
+            coordinates=coordinates,  # Pass coordinates for distance features
+            adj_list=adj_list,
+            edge_batch_idx=edge_batch_idx,
             masked_elements=masked_elements,
         )  # [B, N, hidden_dim]
         
-        # Step 4: Scale and shift parameters
-        raw_scales = self.scale_network(aggregated_features)  # [B, N, 3]
-        shifts = self.shift_network(aggregated_features)      # [B, N, 3]
+        # Step 2: Combine node features with coordinate information
+        # Use unchanged coordinates as conditioning
+        conditioning_coords = coordinates * unchanged_mask.unsqueeze(-1)
         
-        # CRITICAL: Normalize scales to prevent explosion (match simple flow behavior)
-        log_scales = torch.tanh(raw_scales) * 0.05  # Limit initial range to ±0.05
+        # Concatenate node features with coordinates
+        combined_features = torch.cat([
+            node_features,  # [B, N, hidden_dim]
+            conditioning_coords,  # [B, N, 3]
+        ], dim=-1)  # [B, N, hidden_dim + 3]
         
-        # Apply coupling mask to scale/shift (only transform specified atoms)
+        # Step 3: Predict scale and shift parameters
+        raw_scales = self.scale_network(combined_features)  # [B, N, 3]
+        shifts = self.shift_network(combined_features)      # [B, N, 3]
+        
+        # Allow expressive transformations while maintaining stability
+        log_scales = torch.tanh(raw_scales) * 2.0  # Allow ±2.0 range (40x more expressive)
+        
+        # Apply coupling mask (only transform specified atoms)
         mask_3d = coupling_mask.unsqueeze(-1)  # [B, N, 1]
         log_scales = log_scales * mask_3d  # Zero out unchanged atoms
         shifts = shifts * mask_3d
@@ -218,7 +178,7 @@ class GraphNVPCouplingLayer(nn.Module):
         scales = torch.exp(log_scales)  # [B, N, 3]
         
         if reverse:
-            # Inverse: x = (y - t) / s  
+            # Inverse: x = (y - t) / s
             output_coords = (coordinates - shifts) / (scales + 1e-8)
             log_det = -log_det  # Negative for inverse
         else:
@@ -235,9 +195,4 @@ class GraphNVPCouplingLayer(nn.Module):
         
     def extra_repr(self) -> str:
         """String representation of layer configuration."""
-        return (
-            f"phase={self.phase}, "
-            f"graph_embed_dim={self.graph_embed_dim}, "
-            f"node_feature_dim={self.node_feature_dim}, "
-            f"use_graph_embedding={self.use_graph_embedding}"
-        ) 
+        return f"phase={self.phase}, message_passing" 

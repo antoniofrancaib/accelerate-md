@@ -21,47 +21,58 @@ temperature_pairs:
 # Data section – paths will be filled automatically from `peptide_code` unless
 # explicitly overridden.
 data:
-  subsample_rate: 100
+  subsample_rate: 10000
   filter_chirality: false
   center_coordinates: false
+  augment_coordinates: false #to be implemented
 
-# Model hyper-parameters - LARGER CAPACITY
+# Model hyper-parameters
 model:
-  # Architecture selection: "simple" (PTSwapFlow) or "graph" (PTSwapGraphFlow)
-  architecture: "simple"  # Options: "simple", "graph"
+  # Architecture selection: "simple" (PTSwapFlow), "graph" (PTSwapGraphFlow), or "transformer" (PTSwapTransformerFlow)
+  architecture: "graph"  # Options: "simple", "graph", "transformer"
   
-  # num_atoms: dynamically determined from dataset (no longer hardcoded)
-  embedding_dim: 64     # For future atom type embeddings and graph-aware features
-  flow_layers: 8        # 50% more coupling layers
+  # Core flow parameters
+  flow_layers: 10       # More coupling layers for complex transformations
   hidden_dim: 512       # 2x larger hidden layers
-  use_attention: false  # Enable when adding molecular attention
   
   # Graph-specific parameters (only used when architecture="graph")
   graph:
     atom_vocab_size: 4              # H, C, N, O
+    atom_embed_dim: 128             # Larger atom embeddings for richer representation
+    hidden_dim: 512                 # Much larger hidden dimension for message passing
+    num_mp_layers: 4                # Deeper message passing (2x current depth)
+  
+  # Transformer-specific parameters (only used when architecture="transformer")
+  transformer:
+    atom_vocab_size: 4              # H, C, N, O
     atom_embed_dim: 32              # Dimension of atom type embeddings
-    graph_embed_dim: 64             # Global graph embedding dimension (0 to disable)
-    node_feature_dim: 64            # Per-atom feature dimension
-    attention_lengthscales: [1.0, 2.0, 4.0]  # Multi-head attention scales
+    transformer_hidden_dim: 128     # Hidden dimension for transformer layers
+    mlp_hidden_layer_dims: [128, 128]  # Hidden layer dimensions for MLPs
+    num_transformer_layers: 2       # Number of transformer encoder layers per coupling layer
+    n_head: 8                       # Number of attention heads
+    dim_feedforward: 2048           # Feedforward dimension in transformer
+    rff_encoding_dim: 64            # Random Fourier Features encoding dimension
+    rff_scale_mean: 1.0             # Mean of RFF frequency scale distribution
+    rff_scale_stddev: 1.0           # Std dev of RFF frequency scale distribution
 
 # Training hyper-parameters
 training:
   batch_size: 64  # Smaller batch due to larger model
   learning_rate: 0.0001
-  num_epochs: 200
+  num_epochs: 50
   val_split: 0.1
   early_stopping_patience: 50
   clip_grad_norm: 5.0
   warmup_epochs: 0  # no auxiliary schedules when using pure NLL
   min_lr: 0.00005
   lr_factor: 0.3
-  lr_patience: 2
+  lr_patience: 5     # More patience for complex loss landscape
 
   # Loss component weights (can be scheduled over warmup_epochs)
-  nll_start: 0.0    # NLL weight at training start
-  nll_end: 0.0      # NLL weight at training end
-  acc_start: 1.0    # Acceptance loss weight at start (disabled)
-  acc_end: 1.0      # Acceptance loss weight at end (disabled)
+  nll_start: 1.0    # NLL weight at training start
+  nll_end: 1.0      # NLL weight at training end
+  acc_start: 0.0    # Acceptance loss weight at start (disabled)
+  acc_end: 0.5      # Acceptance loss weight at end (disabled)
 
 # Output directories
 output:

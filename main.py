@@ -55,10 +55,8 @@ def build_model(model_cfg: dict, pair: Tuple[int, int], temps: list, target_name
             num_layers=model_cfg["flow_layers"],
             atom_vocab_size=graph_cfg.get("atom_vocab_size", 4),
             atom_embed_dim=graph_cfg.get("atom_embed_dim", 32),
-            graph_embed_dim=graph_cfg.get("graph_embed_dim", 64),
-            node_feature_dim=graph_cfg.get("node_feature_dim", 64),
-            hidden_dim=model_cfg["hidden_dim"],
-            attention_lengthscales=graph_cfg.get("attention_lengthscales", [1.0, 2.0, 4.0]),
+            hidden_dim=graph_cfg.get("hidden_dim", model_cfg["hidden_dim"]),
+            num_mp_layers=graph_cfg.get("num_mp_layers", 2),
             source_temperature=temps[pair[0]],
             target_temperature=temps[pair[1]],
             target_name=target_name,
@@ -66,8 +64,46 @@ def build_model(model_cfg: dict, pair: Tuple[int, int], temps: list, target_name
             device=device,
         )
         
+    elif architecture == "transformer":
+        # Transformer-based flow with dimension-agnostic design
+        from src.accelmd.flows import PTSwapTransformerFlow
+        from src.accelmd.flows.transformer_block import TransformerConfig
+        from src.accelmd.flows.rff_position_encoder import RFFPositionEncoderConfig
+        
+        transformer_cfg = model_cfg.get("transformer", {})
+        
+        # Create transformer configuration
+        transformer_config = TransformerConfig(
+            n_head=transformer_cfg.get("n_head", 8),
+            dim_feedforward=transformer_cfg.get("dim_feedforward", 2048),
+            dropout=0.0,  # No dropout for deterministic likelihood
+        )
+        
+        # Create RFF position encoder configuration
+        rff_config = RFFPositionEncoderConfig(
+            encoding_dim=transformer_cfg.get("rff_encoding_dim", 64),
+            scale_mean=transformer_cfg.get("rff_scale_mean", 1.0),
+            scale_stddev=transformer_cfg.get("rff_scale_stddev", 1.0),
+        )
+        
+        return PTSwapTransformerFlow(
+            num_layers=model_cfg["flow_layers"],
+            atom_vocab_size=transformer_cfg.get("atom_vocab_size", 4),
+            atom_embed_dim=transformer_cfg.get("atom_embed_dim", 32),
+            transformer_hidden_dim=transformer_cfg.get("transformer_hidden_dim", 128),
+            mlp_hidden_layer_dims=transformer_cfg.get("mlp_hidden_layer_dims", [128, 128]),
+            num_transformer_layers=transformer_cfg.get("num_transformer_layers", 2),
+            source_temperature=temps[pair[0]],
+            target_temperature=temps[pair[1]],
+            target_name=target_name,
+            target_kwargs=target_kwargs,
+            transformer_config=transformer_config,
+            rff_position_encoder_config=rff_config,
+            device=device,
+        )
+        
     else:
-        raise ValueError(f"Unknown architecture: {architecture}. Must be 'simple' or 'graph'.")
+        raise ValueError(f"Unknown architecture: {architecture}. Must be 'simple', 'graph', or 'transformer'.")
 
 
 def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None = None):

@@ -145,10 +145,11 @@ class PTSwapTrainer:
                 det_batch = next(iter(self.val_loader))
                 det_batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in det_batch.items()}
 
-                # Check if this is a graph flow that needs molecular data
+                # Check if this is a flow that needs molecular data
                 from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
-                if isinstance(self.model, PTSwapGraphFlow):
-                    # Pass molecular data for graph flow
+                from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+                if isinstance(self.model, (PTSwapGraphFlow, PTSwapTransformerFlow)):
+                    # Pass molecular data for graph/transformer flow
                     _, ld_f = self.model.forward(
                         coordinates=det_batch["source_coords"],
                         atom_types=det_batch.get("atom_types"),
@@ -159,7 +160,9 @@ class PTSwapTrainer:
                     _, ld_inv = self.model.inverse(
                         coordinates=det_batch["target_coords"],
                         atom_types=det_batch.get("atom_types"),
-                        adj_list=det_batch.get("adj_list")
+                        adj_list=det_batch.get("adj_list"),
+                        edge_batch_idx=det_batch.get("edge_batch_idx"),
+                        masked_elements=det_batch.get("masked_elements")
                     )
                 else:
                     # Simple flow - only needs coordinates
