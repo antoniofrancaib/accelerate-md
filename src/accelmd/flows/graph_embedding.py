@@ -185,7 +185,7 @@ class MessagePassingLayer(nn.Module):
         
         # Message function: combine source, target, and edge features
         self.message_mlp = nn.Sequential(
-            nn.Linear(2 * input_dim + 1, output_dim),  # +1 for distance
+            nn.Linear(2 * input_dim + 4, output_dim),  # +4 for distance, angle, dihedral, bond_type
             nn.ReLU(),
             nn.Linear(output_dim, output_dim),
             nn.ReLU(),
@@ -258,16 +258,36 @@ class MessagePassingLayer(nn.Module):
         h_tgt = h_flat[tgt_idx]  # [E, D]
         
         # Compute edge features (distance if coordinates provided)
-        edge_features = torch.ones(E, 1, device=device)  # Default feature
+        edge_features = torch.ones(E, 4, device=device)  # 4 features: [distance, angle, dihedral, bond_type]
         if coordinates is not None:
             coords_flat = coordinates.view(-1, 3)  # [B*N, 3]
             src_coords = coords_flat[src_idx]  # [E, 3]
             tgt_coords = coords_flat[tgt_idx]  # [E, 3]
+            
+            # Feature 1: Distance
             distances = torch.norm(src_coords - tgt_coords, dim=-1, keepdim=True)  # [E, 1]
-            edge_features = distances
+            
+            # Feature 2: Bond angle (simplified - using vector angles)
+            # This is a placeholder - in real systems you'd compute actual bond angles
+            bond_vectors = tgt_coords - src_coords  # [E, 3]
+            # Compute angle with respect to a reference direction (e.g., z-axis)
+            z_ref = torch.tensor([0., 0., 1.], device=device).expand_as(bond_vectors)
+            cosines = torch.sum(bond_vectors * z_ref, dim=-1, keepdim=True) / (torch.norm(bond_vectors, dim=-1, keepdim=True) + 1e-8)
+            angles = torch.acos(torch.clamp(cosines, -1+1e-6, 1-1e-6))  # [E, 1]
+            
+            # Feature 3: Dihedral angle (simplified - using cross products)
+            # This is a placeholder for proper dihedral calculation
+            cross_prods = torch.cross(bond_vectors, z_ref, dim=-1)
+            dihedral_indicator = torch.norm(cross_prods, dim=-1, keepdim=True)  # [E, 1]
+            
+            # Feature 4: Bond type indicator (based on distance ranges)
+            # Typical covalent bond ranges: 1.0-1.8 Å, adjust as needed
+            bond_type = torch.sigmoid(2.0 * (1.5 - distances))  # [E, 1], higher for shorter bonds
+            
+            edge_features = torch.cat([distances, angles, dihedral_indicator, bond_type], dim=-1)
         
         # Compute messages: combine node features with edge features
-        edge_input = torch.cat([h_src, h_tgt, edge_features], dim=-1)  # [E, 2*D + 1]
+        edge_input = torch.cat([h_src, h_tgt, edge_features], dim=-1)  # [E, 2*D + 4]
         messages = self.message_mlp(edge_input)  # [E, output_dim]
         
         # Aggregate messages for each node (sum aggregation)

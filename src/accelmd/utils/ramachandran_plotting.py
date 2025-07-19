@@ -270,6 +270,7 @@ def generate_ramachandran_grid(
     temp_pair: Tuple[int, int],
     output_path: str,
     n_samples: int = 5000,
+    peptide_code_override: Optional[str] = None,
 ) -> bool:
     """Generate 2×2 Ramachandran plot grid for swap flow visualization.
     
@@ -291,6 +292,8 @@ def generate_ramachandran_grid(
         Path where to save the plot
     n_samples
         Number of samples to use for plotting
+    peptide_code_override : str, optional
+        If provided, override the peptide_code from config for multi-peptide evaluation
         
     Returns
     -------
@@ -302,6 +305,18 @@ def generate_ramachandran_grid(
         cfg_base = load_config(config_path)
         device = setup_device(cfg_base)
         pair = tuple(temp_pair)
+
+        # Override peptide_code if provided (for multi-peptide mode)
+        if peptide_code_override is not None:
+            # Create modified config for this specific peptide
+            cfg_base = cfg_base.copy()
+            cfg_base["peptide_code"] = peptide_code_override
+            
+            # Build peptide-specific data paths
+            peptide_dir = f"datasets/pt_dipeptides/{peptide_code_override}"
+            cfg_base.setdefault("data", {})
+            cfg_base["data"]["pt_data_path"] = f"{peptide_dir}/pt_{peptide_code_override}.pt"
+            cfg_base["data"]["molecular_data_path"] = peptide_dir
 
         # Dataset & loader (CPU) – we just iterate sequentially until we have N.
         run_cfg = create_run_config(cfg_base, pair, device="cpu")

@@ -106,6 +106,10 @@ class PTSwapGraphFlow(nn.Module):
                 atom_embed_dim=atom_embed_dim,
                 hidden_dim=hidden_dim,
                 num_mp_layers=num_mp_layers,
+                # Enhanced parameters for better expressivity
+                scale_range=0.5,  # Allow ±50% scaling
+                deeper_networks=True,  # Use deeper MLPs
+                temperature_conditioning=True,  # Enable temperature awareness
             )
             self.coupling_layers.append(layer)
             
@@ -186,6 +190,9 @@ class PTSwapGraphFlow(nn.Module):
                 edge_batch_idx=edge_batch_idx,
                 masked_elements=masked_elements,
                 reverse=reverse,
+                # Pass temperature information for conditioning
+                source_temp=self.source_temp,
+                target_temp=self.target_temp,
             )
             # Ensure log_det is on the same device as total_log_det
             total_log_det += log_det.to(total_log_det.device)
@@ -252,6 +259,7 @@ class PTSwapGraphFlow(nn.Module):
         source_coords: Optional[Tensor] = None,  
         target_coords: Optional[Tensor] = None,
         direction: Optional[str] = None,
+        peptide_names: Optional[List[str]] = None,  # For multi-peptide mode
     ) -> Tensor:
         """Compute log-likelihood for bidirectional training.
         
@@ -310,6 +318,8 @@ class PTSwapGraphFlow(nn.Module):
                 coordinates=reconstructed_coords,
                 target_distribution=self.source_target,  # Low temperature
                 masked_elements=masked_elements,
+                peptide_names=peptide_names,  # For multi-peptide mode
+                temperature=self.source_temp,  # Low temperature
             )
             
             log_likelihood = log_prob_base + log_det
@@ -330,6 +340,8 @@ class PTSwapGraphFlow(nn.Module):
                 coordinates=reconstructed_coords,
                 target_distribution=self.target_target,  # High temperature
                 masked_elements=masked_elements,
+                peptide_names=peptide_names,  # For multi-peptide mode
+                temperature=self.target_temp,  # High temperature
             )
             
             log_likelihood = log_prob_base + log_det
@@ -401,10 +413,52 @@ class PTSwapGraphFlow(nn.Module):
         coordinates: Tensor,  # [B, N, 3]
         target_distribution,  # AldpBoltzmann instance
         masked_elements: Optional[Tensor] = None,  # [B, N]
+        peptide_names: Optional[List[str]] = None,  # For multi-peptide mode
+        temperature: Optional[float] = None,  # Temperature for creating peptide-specific targets
     ) -> Tensor:
         """Compute masked Boltzmann log-probability."""
         B = coordinates.shape[0]
         
+        # Handle multi-peptide batches by creating peptide-specific targets
+        # FIXED: Check for peptide_names first, regardless of masked_elements
+        if peptide_names is not None and temperature is not None:
+            from ..targets import build_target
+            
+            log_probs = []
+            for i in range(B):
+                peptide_name = peptide_names[i]
+                
+                # Extract valid coordinates for this sample
+                if masked_elements is not None:
+                    valid_mask = ~masked_elements[i]  # [N]
+                    valid_coords = coordinates[i][valid_mask].view(-1)  # [3*n_valid]
+                else:
+                    valid_coords = coordinates[i].view(-1)  # All coordinates are valid
+                
+                # Create peptide-specific target
+                if peptide_name.upper() == "AX":
+                    sample_target = build_target(
+                        "aldp", 
+                        temperature=temperature, 
+                        device="cpu"
+                    )
+                else:
+                    pdb_path = f"datasets/pt_dipeptides/{peptide_name}/ref.pdb"
+                    sample_target = build_target(
+                        "dipeptide",
+                        temperature=temperature,
+                        device="cpu",
+                        pdb_path=pdb_path,
+                        env="implicit"
+                    )
+                
+                # Evaluate target on valid coordinates
+                log_prob = sample_target.log_prob(valid_coords.unsqueeze(0)).squeeze(0)
+                log_probs.append(log_prob)
+                
+            return torch.stack(log_probs)
+        
+        # Original single-peptide logic (only used when peptide_names is None)
         # Flatten coordinates while masking padding
         if masked_elements is not None:
             coords_masked = coordinates * (~masked_elements).unsqueeze(-1)

@@ -34,7 +34,7 @@ mkdir -p logs
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # --------- User-configurable section ----------
-CONFIG="${CONFIG:-configs/AK.yaml}"
+CONFIG="${CONFIG:-configs/AA.yaml}"
 TRAIN_MODE="${TRAIN_MODE:-all}"   # all | single
 TEMP_PAIR="${TEMP_PAIR:-0 1}"      # used only if TRAIN_MODE==single
 EPOCHS_OVERRIDE="${EPOCHS:-}"      # optionally override epochs

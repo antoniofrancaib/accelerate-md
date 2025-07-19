@@ -112,65 +112,179 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         base_cfg["training"]["num_epochs"] = epochs_override
     device = setup_device(base_cfg)
 
-    from src.accelmd.utils.config import create_run_config
+    from src.accelmd.utils.config import create_run_config, is_multi_peptide_mode, get_training_peptides, get_multi_batching_mode
     cfg = create_run_config(base_cfg, pair, device)
 
-    # Dataset & loaders
-    dataset = PTTemperaturePairDataset(
-        pt_data_path=cfg["data"]["pt_data_path"],
-        molecular_data_path=cfg["data"]["molecular_data_path"],
-        temp_pair=pair,
-        subsample_rate=cfg["data"].get("subsample_rate", 100),
-        device="cpu",  # keep on CPU; trainer moves to GPU if needed
-        filter_chirality=cfg["data"].get("filter_chirality", False),
-        center_coordinates=cfg["data"].get("center_coordinates", True),
-    )
-    
-    # Extract num_atoms dynamically from the dataset
-    dynamic_num_atoms = dataset.source_coords.shape[1]  # [N, atoms, 3] -> atoms
-    print(f"Dynamically detected {dynamic_num_atoms} atoms from dataset")
-    
-    # Override config with actual num_atoms from data
-    cfg["model"]["num_atoms"] = dynamic_num_atoms
-    
-    val_split = 0.1
-    val_size = int(len(dataset)*val_split)
-    train_size = len(dataset) - val_size
-    train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
+    # Check mode and create appropriate dataset and loaders
+    if is_multi_peptide_mode(base_cfg):
+        print("Training in multi-peptide mode")
+        
+        # Import multi-peptide dataset functionality
+        from src.accelmd.data import MultiPeptidePairDataset, collate_padded, RoundRobinLoader
+        
+        # Get training peptides
+        train_peptides = get_training_peptides(base_cfg)
+        print(f"Training peptides: {train_peptides}")
+        
+        # Create multi-peptide dataset
+        dataset = MultiPeptidePairDataset(
+            peptides=train_peptides,
+            temp_pair=pair,
+            base_data_dir="datasets/pt_dipeptides",
+            subsample_rate=cfg["data"].get("subsample_rate", 100),
+            device="cpu",  # keep on CPU; trainer moves to GPU if needed
+            filter_chirality=cfg["data"].get("filter_chirality", False),
+            center_coordinates=cfg["data"].get("center_coordinates", True),
+        )
+        
+        # For multi-peptide mode, num_atoms is not fixed - flows handle variable sizes
+        # We still set a representative value for compatibility
+        representative_dataset = dataset.datasets[0]
+        dynamic_num_atoms = representative_dataset.source_coords.shape[1]
+        print(f"Representative num_atoms: {dynamic_num_atoms} (flows will handle variable sizes)")
+        cfg["model"]["num_atoms"] = dynamic_num_atoms
+        
+        # Split dataset for validation
+        val_split = 0.1
+        val_size = int(len(dataset) * val_split)
+        train_size = len(dataset) - val_size
+        train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
+        
+        # Choose batching strategy
+        batching_mode = get_multi_batching_mode(base_cfg)
+        batch_size = cfg["training"]["batch_size"]
+        
+        if batching_mode == "padding":
+            print("Using padding batching mode")
+            loader_train = DataLoader(
+                train_ds,
+                batch_size=batch_size,
+                shuffle=True,
+                collate_fn=collate_padded,
+            )
+            loader_val = DataLoader(
+                val_ds,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=collate_padded,
+            )
+        elif batching_mode == "uniform":
+            print("Using uniform (round-robin) batching mode")
+            # For uniform batching, we need to split the individual peptide datasets
+            train_peptide_datasets = []
+            val_peptide_datasets = []
+            
+            for peptide_dataset in dataset.get_peptide_datasets():
+                # Split each peptide dataset
+                peptide_val_size = int(len(peptide_dataset) * val_split)
+                peptide_train_size = len(peptide_dataset) - peptide_val_size
+                
+                if peptide_train_size > 0 and peptide_val_size > 0:
+                    peptide_train_ds, peptide_val_ds = torch.utils.data.random_split(
+                        peptide_dataset, [peptide_train_size, peptide_val_size]
+                    )
+                    train_peptide_datasets.append(peptide_train_ds)
+                    val_peptide_datasets.append(peptide_val_ds)
+                elif peptide_train_size > 0:
+                    # If peptide dataset is too small for validation split
+                    train_peptide_datasets.append(peptide_dataset)
+            
+            loader_train = RoundRobinLoader(
+                train_peptide_datasets,
+                batch_size=batch_size,
+                shuffle=True,
+                peptide_names=train_peptides,  # Pass peptide names for uniform batching
+            )
+            
+            if val_peptide_datasets:
+                loader_val = RoundRobinLoader(
+                    val_peptide_datasets,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    peptide_names=train_peptides,  # Pass peptide names for uniform batching
+                )
+            else:
+                # Fallback: use a small subset of training data for validation
+                loader_val = RoundRobinLoader(
+                    train_peptide_datasets,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    peptide_names=train_peptides,  # Pass peptide names for uniform batching
+                )
+        else:
+            raise ValueError(f"Unknown batching mode: {batching_mode}")
+        
+        # For multi-peptide mode, use the first training peptide as representative configuration
+        # The actual target is determined by individual peptide types during training
+        representative_peptide = train_peptides[0]
+        target_name = "dipeptide"  # Most general case
+        
+        # Use the first training peptide's PDB file as representative
+        representative_pdb_path = f"datasets/pt_dipeptides/{representative_peptide}/ref.pdb"
+        target_kwargs_extra = {
+            "pdb_path": representative_pdb_path,
+            "env": "implicit"
+        }
+        
+    else:
+        print("Training in single-peptide mode")
+        
+        # Original single-peptide logic
+        dataset = PTTemperaturePairDataset(
+            pt_data_path=cfg["data"]["pt_data_path"],
+            molecular_data_path=cfg["data"]["molecular_data_path"],
+            temp_pair=pair,
+            subsample_rate=cfg["data"].get("subsample_rate", 100),
+            device="cpu",  # keep on CPU; trainer moves to GPU if needed
+            filter_chirality=cfg["data"].get("filter_chirality", False),
+            center_coordinates=cfg["data"].get("center_coordinates", True),
+        )
+        
+        # Extract num_atoms dynamically from the dataset
+        dynamic_num_atoms = dataset.source_coords.shape[1]  # [N, atoms, 3] -> atoms
+        print(f"Dynamically detected {dynamic_num_atoms} atoms from dataset")
+        
+        # Override config with actual num_atoms from data
+        cfg["model"]["num_atoms"] = dynamic_num_atoms
+        
+        val_split = 0.1
+        val_size = int(len(dataset)*val_split)
+        train_size = len(dataset) - val_size
+        train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
 
-    loader_train = DataLoader(
-        train_ds,
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=True,
-        collate_fn=PTTemperaturePairDataset.collate_fn,
-    )
-    loader_val = DataLoader(
-        val_ds,
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=False,
-        collate_fn=PTTemperaturePairDataset.collate_fn,
-    )
+        loader_train = DataLoader(
+            train_ds,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=True,
+            collate_fn=PTTemperaturePairDataset.collate_fn,
+        )
+        loader_val = DataLoader(
+            val_ds,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=False,
+            collate_fn=PTTemperaturePairDataset.collate_fn,
+        )
+        
+        # Determine target based on peptide_code for single-peptide mode
+        peptide_code = cfg["peptide_code"].upper()
+        if peptide_code == "AX":
+            target_name = "aldp"
+            target_kwargs_extra = {}
+        else:
+            target_name = "dipeptide"
+            # For dipeptide target, we need PDB path and environment
+            pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
+            target_kwargs_extra = {
+                "pdb_path": pdb_path,
+                "env": "implicit"
+            }
 
-    # Model - now uses dynamic num_atoms
+    # Common model configuration
     model_cfg = cfg["model"]
     temps = cfg["temperatures"]["values"]
     sys_cfg = cfg.get("system", {})
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
-    
-    # Determine target based on peptide_code
-    peptide_code = cfg["peptide_code"].upper()
-    if peptide_code == "AX":
-        target_name = "aldp"
-        target_kwargs_extra = {}
-    else:
-        target_name = "dipeptide"
-        # For dipeptide target, we need PDB path and environment
-        pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
-        target_kwargs_extra = {
-            "pdb_path": pdb_path,
-            "env": "implicit"
-        }
     
     # Add system-level energy parameters to target kwargs
     target_kwargs_extra.update({
@@ -182,7 +296,7 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         model_cfg=model_cfg,
         pair=pair,
         temps=temps,
-        target_name=target_name,  # Determined from peptide_code
+        target_name=target_name,
         target_kwargs=target_kwargs_extra,
         device=device,
         num_atoms=model_cfg["num_atoms"],  # Only used for simple architecture
@@ -216,18 +330,138 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
     base_cfg = load_config(cfg_path)
     device = setup_device(base_cfg)
 
-    cfg = create_run_config(base_cfg, pair, device)
+    from src.accelmd.utils.config import is_multi_peptide_mode, get_eval_peptides
 
-    # Dataset & DataLoader (no split needed for evaluation)
-    dataset = PTTemperaturePairDataset(
-        pt_data_path=cfg["data"]["pt_data_path"],
-        molecular_data_path=cfg["data"]["molecular_data_path"],
-        temp_pair=pair,
-        subsample_rate=cfg["data"].get("subsample_rate", 100),
-        device="cpu",
-        filter_chirality=cfg["data"].get("filter_chirality", False),
-        center_coordinates=cfg["data"].get("center_coordinates", True),
-    )
+    if is_multi_peptide_mode(base_cfg):
+        print("Evaluating in multi-peptide mode")
+        
+        eval_peptides = get_eval_peptides(base_cfg)
+        print(f"Evaluation peptides: {eval_peptides}")
+        
+        # Evaluate each peptide separately
+        for peptide in eval_peptides:
+            print(f"\n{'='*50}")
+            print(f"Evaluating peptide: {peptide}")
+            print(f"{'='*50}")
+            
+            _evaluate_single_peptide(
+                cfg_path=cfg_path,
+                pair=pair,
+                checkpoint=checkpoint,
+                num_samples=num_samples,
+                save_metrics=save_metrics,
+                peptide_code=peptide,
+                is_multi_mode=True
+            )
+    else:
+        print("Evaluating in single-peptide mode")
+        
+        # Use original single-peptide evaluation
+        _evaluate_single_peptide(
+            cfg_path=cfg_path,
+            pair=pair,
+            checkpoint=checkpoint,
+            num_samples=num_samples,
+            save_metrics=save_metrics,
+            peptide_code=None,  # Will be read from config
+            is_multi_mode=False
+        )
+
+
+def _evaluate_single_peptide(
+    cfg_path: str, 
+    pair: Tuple[int, int], 
+    checkpoint: str, 
+    num_samples: int, 
+    save_metrics: bool,
+    peptide_code: str | None,
+    is_multi_mode: bool
+):
+    """Evaluate a single peptide for the given temperature pair.
+    
+    Parameters
+    ----------
+    cfg_path : str
+        Path to configuration file
+    pair : Tuple[int, int]
+        Temperature pair indices
+    checkpoint : str
+        Path to model checkpoint
+    num_samples : int
+        Number of samples for evaluation
+    save_metrics : bool
+        Whether to save metrics to file
+    peptide_code : str | None
+        Peptide code to evaluate (if None, read from config)
+    is_multi_mode : bool
+        Whether this is part of multi-peptide evaluation
+    """
+    base_cfg = load_config(cfg_path)
+    cfg = create_run_config(base_cfg, pair, setup_device(base_cfg))
+
+    if is_multi_mode:
+        # Create peptide-specific output directory
+        low, high = pair
+        base_output_dir = Path(cfg["output"]["pair_dir"])
+        peptide_output_dir = base_output_dir / peptide_code
+        peptide_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create subdirectories
+        for subdir in ["metrics", "plots"]:
+            (peptide_output_dir / subdir).mkdir(exist_ok=True)
+        
+        # Build peptide-specific dataset
+        peptide_dir = Path("datasets/pt_dipeptides") / peptide_code
+        pt_data_path = peptide_dir / f"pt_{peptide_code}.pt"
+        molecular_data_path = peptide_dir
+        
+        dataset = PTTemperaturePairDataset(
+            pt_data_path=str(pt_data_path),
+            molecular_data_path=str(molecular_data_path),
+            temp_pair=pair,
+            subsample_rate=cfg["data"].get("subsample_rate", 100),
+            device="cpu",
+            filter_chirality=cfg["data"].get("filter_chirality", False),
+            center_coordinates=cfg["data"].get("center_coordinates", True),
+        )
+        
+        # Determine target configuration for this peptide
+        if peptide_code.upper() == "AX":
+            target_name = "aldp"
+            target_kwargs_extra = {}
+        else:
+            target_name = "dipeptide"
+            # For dipeptide target, we need PDB path and environment
+            pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
+            target_kwargs_extra = {
+                "pdb_path": pdb_path,
+                "env": "implicit"
+            }
+    else:
+        # Single-peptide mode - use original logic
+        dataset = PTTemperaturePairDataset(
+            pt_data_path=cfg["data"]["pt_data_path"],
+            molecular_data_path=cfg["data"]["molecular_data_path"],
+            temp_pair=pair,
+            subsample_rate=cfg["data"].get("subsample_rate", 100),
+            device="cpu",
+            filter_chirality=cfg["data"].get("filter_chirality", False),
+            center_coordinates=cfg["data"].get("center_coordinates", True),
+        )
+        
+        # Determine target based on peptide_code from config
+        peptide_code = cfg["peptide_code"].upper()
+        if peptide_code == "AX":
+            target_name = "aldp"
+            target_kwargs_extra = {}
+        else:
+            target_name = "dipeptide"
+            # For dipeptide target, we need PDB path and environment
+            pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
+            target_kwargs_extra = {
+                "pdb_path": pdb_path,
+                "env": "implicit"
+            }
     
     # Extract num_atoms dynamically from the dataset
     dynamic_num_atoms = dataset.source_coords.shape[1]  # [N, atoms, 3] -> atoms
@@ -251,20 +485,6 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
     energy_cut = sys_cfg.get("energy_cut")
     energy_max = sys_cfg.get("energy_max")
     
-    # Determine target based on peptide_code
-    peptide_code = cfg["peptide_code"].upper()
-    if peptide_code == "AX":
-        target_name = "aldp"
-        target_kwargs_extra = {}
-    else:
-        target_name = "dipeptide"
-        # For dipeptide target, we need PDB path and environment
-        pdb_path = f"datasets/timewarp/2AA-1-big/train/{peptide_code}-traj-state0.pdb"
-        target_kwargs_extra = {
-            "pdb_path": pdb_path,
-            "env": "implicit"
-        }
-    
     # Add system-level energy parameters to target kwargs
     target_kwargs_extra.update({
         "energy_cut": float(energy_cut) if energy_cut is not None else None,
@@ -275,12 +495,12 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
         model_cfg=model_cfg,
         pair=pair,
         temps=temps,
-        target_name=target_name,  # Determined from peptide_code
+        target_name=target_name,
         target_kwargs=target_kwargs_extra,
-        device=device,
+        device=setup_device(base_cfg),
         num_atoms=model_cfg["num_atoms"],  # Only used for simple architecture
     )
-    state_dict = torch.load(checkpoint, map_location=device)
+    state_dict = torch.load(checkpoint, map_location=setup_device(base_cfg))
     model.load_state_dict(state_dict)
 
     # Boltzmann bases (cpu) - use the same target type as the model
@@ -298,23 +518,37 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
     max_batches = (num_samples + batch_size - 1) // batch_size
 
     naive_acc = naive_acceptance(loader, base_low, base_high, max_batches=max_batches)
-    flow_acc = flow_acceptance(loader, model, base_low, base_high, device=device, max_batches=max_batches)
+    flow_acc = flow_acceptance(loader, model, base_low, base_high, device=setup_device(base_cfg), max_batches=max_batches)
 
-    print("\nSwap acceptance estimate (pair %s ↔ %s, %d samples)" % (pair[0], pair[1], num_samples))
+    print(f"\nSwap acceptance estimate for {peptide_code} (pair {pair[0]} ↔ {pair[1]}, {num_samples} samples)")
     print("    naïve swap : %.4f" % naive_acc)
     print("    flow swap  : %.4f" % flow_acc)
 
     if save_metrics:
-        metrics_dir = Path(cfg["output"]["pair_dir"]) / "metrics"
+        if is_multi_mode:
+            # Save in peptide-specific directory
+            base_output_dir = Path(cfg["output"]["pair_dir"])
+            metrics_dir = base_output_dir / peptide_code / "metrics"
+        else:
+            # Save in standard location
+            metrics_dir = Path(cfg["output"]["pair_dir"]) / "metrics"
+        
         metrics_dir.mkdir(parents=True, exist_ok=True)
         out_path = metrics_dir / "swap_acceptance.json"
         with open(out_path, "w") as fh:
             json.dump({
+                "peptide_code": peptide_code,
                 "naive_acceptance": naive_acc,
                 "flow_acceptance": flow_acc,
                 "num_samples": num_samples
             }, fh, indent=2)
         print(f"Metrics saved to {out_path}")
+    
+    # Generate Ramachandran plot
+    if is_multi_mode:
+        _generate_rama_plot_peptide(cfg_path, pair, checkpoint, peptide_code)
+    else:
+        _generate_rama_plot(cfg_path, pair, checkpoint)
 
 
 def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
@@ -345,6 +579,35 @@ def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
         print(f"[WARN] Ramachandran plot generation failed for pair {pair}: {e}")
 
 
+def _generate_rama_plot_peptide(cfg_path: str, pair: Tuple[int, int], checkpoint: str, peptide_code: str):
+    """Generate 2×2 Ramachandran grid for a single peptide using the utility function.
+
+    The plot is saved under <pair_dir>/<peptide_code>/plots/rama_grid.png.
+    """
+    base_cfg = load_config(cfg_path)
+    run_cfg = create_run_config(base_cfg, pair, device="cpu")
+    peptide_output_dir = Path(run_cfg["output"]["pair_dir"]) / peptide_code
+    plots_dir = peptide_output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    out_path = plots_dir / "rama_grid.png"
+
+    try:
+        success = generate_ramachandran_grid(
+            config_path=cfg_path,
+            checkpoint_path=str(checkpoint),
+            temp_pair=pair,
+            output_path=str(out_path),
+            n_samples=20000,
+            peptide_code_override=peptide_code,  # Pass peptide override
+        )
+        if not success:
+            print(f"[WARN] Ramachandran plot generation failed for peptide {peptide_code}")
+        else:
+            print(f"Ramachandran plot saved to {out_path}")
+    except Exception as e:
+        print(f"[WARN] Ramachandran plot generation failed for peptide {peptide_code}: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/aldp.yaml")
@@ -360,7 +623,6 @@ def main():
             raise ValueError("--checkpoint and --temp-pair are required with --evaluate")
         pair = tuple(args.temp_pair)
         evaluate_pair(args.config, pair, args.checkpoint, num_samples=args.num_eval_samples, save_metrics=False)
-        _generate_rama_plot(args.config, pair, args.checkpoint)
         return
 
     # ------------------------------------------------------------------
@@ -380,14 +642,16 @@ def main():
         ckpt_path = train_pair(args.config, pair, epochs_override=args.epochs)
         if ckpt_path is not None:
             evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
-            _generate_rama_plot(args.config, tuple(pair), str(ckpt_path))
+        else:
+            print(f"No checkpoint found for pair {pair}. Skipping evaluation.")
     else:
         cfg = load_config(args.config)
         for pair in get_temperature_pairs(cfg):
             ckpt_path = train_pair(args.config, tuple(pair), epochs_override=args.epochs)
             if ckpt_path is not None:
                 evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
-                _generate_rama_plot(args.config, tuple(pair), str(ckpt_path))
+            else:
+                print(f"No checkpoint found for pair {pair}. Skipping evaluation.")
 
 
 if __name__ == "__main__":

@@ -84,6 +84,70 @@ AccelMD uses a single configuration file for all experiments:
 
 See `configs/README.md` for detailed configuration documentation.
 
+## Multi-Peptide Training
+
+AccelMD supports training flows on multiple peptides simultaneously, enabling better generalization across different molecular sizes and types.
+
+### Configuration
+
+Enable multi-peptide mode by setting `mode: multi` and specifying peptide lists:
+
+```yaml
+mode: multi          # Enable multi-peptide training
+
+peptides:
+  train: [AA, AK, AS]  # Peptides for training (required)
+  eval:  [GA, KW]      # Peptides for evaluation (optional, defaults to train)
+
+multi_mode:
+  batching: padding    # "padding" (default) or "uniform"
+
+model:
+  architecture: transformer  # MUST be "graph" or "transformer"
+```
+
+### Key Features
+
+- **Mixed Training**: Train one flow on multiple peptide types simultaneously
+- **Separate Evaluation**: Evaluate each peptide individually with detailed metrics
+- **Dimension Agnostic**: Flows handle variable molecule sizes automatically
+- **Two Batching Modes**:
+  - `padding`: Pad smaller molecules to batch max size (default)
+  - `uniform`: Round-robin between peptide-specific batches
+
+### Architecture Requirements
+
+Multi-peptide mode **requires** `architecture: "graph"` or `"transformer"`. The simple architecture cannot handle variable molecule sizes.
+
+### Output Structure
+
+In multi-peptide mode, evaluation results are organized by peptide:
+
+```bash
+outputs/<experiment_name>/
+├── pair_0_1/
+│   ├── AA/                     # Per-peptide evaluation
+│   │   ├── metrics/
+│   │   │   └── swap_acceptance.json
+│   │   └── plots/
+│   │       └── rama_grid.png
+│   ├── AK/
+│   │   └── ... (same structure)
+│   └── models/                 # Shared model checkpoints
+│       └── best_model_epoch*.pt
+```
+
+### Example Usage
+
+```bash
+# Train on multiple peptides
+conda activate accelmd && python main.py --config configs/multi_peptide_example.yaml --temp-pair 0 1
+
+# Results saved per-peptide for detailed analysis
+```
+
+See `configs/multi_peptide_example.yaml` for a complete configuration example.
+
 **Pipeline explained:** (this is to be improved in the future )
 ```bash
 ┌──────── main.py ────────┐

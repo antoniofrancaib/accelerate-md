@@ -51,6 +51,9 @@ def bidirectional_nll(
             molecular_kwargs["edge_batch_idx"] = batch["edge_batch_idx"]
         if "masked_elements" in batch:
             molecular_kwargs["masked_elements"] = batch["masked_elements"]
+        # Pass peptide information for multi-peptide mode
+        if "peptide_names" in batch:
+            molecular_kwargs["peptide_names"] = batch["peptide_names"]
 
     # ----------------------------------------------------------
     # 1. Per-sample forward / reverse NLL
@@ -73,7 +76,8 @@ def bidirectional_nll(
     # ----------------------------------------------------------
     # 2. Optional energy gating (filter out unphysical frames)
     # ----------------------------------------------------------
-    if energy_threshold is not None and energy_threshold > 0:
+    # Skip energy gating for multi-peptide batches (peptide_names indicates mixed batch)
+    if energy_threshold is not None and energy_threshold > 0 and "peptide_names" not in batch:
         def _energy(coords_flat, base):
             logp = base.log_prob(coords_flat)  # −β U
             return -logp / base.beta          # U in kJ/mol
@@ -134,37 +138,36 @@ def acceptance_loss(
     Parameters
     ----------
     model
-        Flow model exposing `.forward()` (low→high) and `.inverse()` (high→low).
+        Flow model with forward/inverse and base targets.
     batch
-        Dict with keys `source_coords`, `target_coords` (shapes `[B,N,3]`).
+        Mini-batch dict from PTTemperaturePairDataset.
     beta_low, beta_high
-        1/(k_B T) for the two replicas (dimensionless).
+        Inverse temperatures of two replicas.
     clamp
-        Whether to clamp the Metropolis exponent so that Δ<0 (α>1) yields 0 loss.
+        Apply max(0, Δ) clamp to loss.
     energy_threshold
-        Optional energy threshold for clipping.
+        Discard samples with potential energy > threshold.
     """
+    x_low = batch["source_coords"]
+    x_high = batch["target_coords"]
 
-    
-    device = next(model.parameters()).device
-    x_low = batch["source_coords"].to(device)
-    x_high = batch["target_coords"].to(device)
-
-    # Check if this is a flow that needs molecular data
+    # Check if this is a molecular flow that needs structural data
     from ..flows.pt_swap_graph_flow import PTSwapGraphFlow
     from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+    
+    molecular_kwargs = {}
     if isinstance(model, (PTSwapGraphFlow, PTSwapTransformerFlow)):
-        molecular_kwargs = {}
+        # Pass molecular data to graph and transformer flows
         if "atom_types" in batch:
-            molecular_kwargs["atom_types"] = batch["atom_types"].to(device)
+            molecular_kwargs["atom_types"] = batch["atom_types"]
         if "adj_list" in batch:
-            molecular_kwargs["adj_list"] = batch["adj_list"].to(device)
+            molecular_kwargs["adj_list"] = batch["adj_list"]
         if "edge_batch_idx" in batch:
-            molecular_kwargs["edge_batch_idx"] = batch["edge_batch_idx"].to(device)
+            molecular_kwargs["edge_batch_idx"] = batch["edge_batch_idx"]
         if "masked_elements" in batch:
-            molecular_kwargs["masked_elements"] = batch["masked_elements"].to(device)
-        
-        # Flow transforms for graph/transformer model
+            molecular_kwargs["masked_elements"] = batch["masked_elements"]
+
+        # Flow transforms with molecular data
         y_high, log_det_f = model.forward(x_low, **molecular_kwargs)   # low → high
         y_low, log_det_inv = model.inverse(x_high, **molecular_kwargs) # high → low
     else:
@@ -172,41 +175,63 @@ def acceptance_loss(
         y_high, log_det_f = model.forward(x_low)   # low → high
         y_low, log_det_inv = model.inverse(x_high) # high → low
 
-    # Energies (kJ/mol) – use model's target distributions (works for any system)
-    def _get_energy(coords_flat, base_target):
-        """Get potential energy from target's log_prob: U = -log_prob / beta"""
-        log_prob = base_target.log_prob(coords_flat)  # -β U
-        return -log_prob / base_target.beta  # U in kJ/mol
-    
-    U_x_low = _get_energy(_flatten(x_low), model.base_low)      # [B]
-    U_x_high = _get_energy(_flatten(x_high), model.base_high)
-    U_y_low = _get_energy(_flatten(y_low), model.base_low)
-    U_y_high = _get_energy(_flatten(y_high), model.base_high)
+    # FIXED: Handle multi-peptide mode for energy evaluation
+    def _get_energy_multi_peptide(coords_flat, beta, temperature):
+        """Get potential energy with multi-peptide support."""
+        if "peptide_names" in batch and len(set(batch["peptide_names"])) == 1:
+            # Uniform batch - all samples are the same peptide type
+            peptide_name = batch["peptide_names"][0]
+            
+            # Create peptide-specific target
+            from ..targets import build_target
+            if peptide_name.upper() == "AX":
+                base_target = build_target(
+                    "aldp", 
+                    temperature=temperature, 
+                    device="cpu"
+                )
+            else:
+                pdb_path = f"datasets/pt_dipeptides/{peptide_name}/ref.pdb"
+                base_target = build_target(
+                    "dipeptide",
+                    temperature=temperature,
+                    device="cpu",
+                    pdb_path=pdb_path,
+                    env="implicit"
+                )
+            
+            log_prob = base_target.log_prob(coords_flat)  # -β U
+            return -log_prob / beta  # U in kJ/mol
+        else:
+            # Fall back to model's base targets (single-peptide mode or mixed batch)
+            base_target = model.base_low if abs(beta - model.base_low.beta) < 1e-6 else model.base_high
+            log_prob = base_target.log_prob(coords_flat)  # -β U
+            return -log_prob / beta  # U in kJ/mol
+
+    # Energies (kJ/mol) – use peptide-specific targets for multi-peptide mode
+    U_x_low = _get_energy_multi_peptide(_flatten(x_low), beta_low, 1.0 / (beta_low * 8.314e-3))      # [B]
+    U_x_high = _get_energy_multi_peptide(_flatten(x_high), beta_high, 1.0 / (beta_high * 8.314e-3))
+    U_y_low = _get_energy_multi_peptide(_flatten(y_low), beta_low, 1.0 / (beta_low * 8.314e-3))
+    U_y_high = _get_energy_multi_peptide(_flatten(y_high), beta_high, 1.0 / (beta_high * 8.314e-3))
 
     # Metropolis exponent (negative log α)
-    neg_log_alpha = (
-        beta_low * U_y_low + beta_high * U_y_high
-        - beta_low * U_x_low - beta_high * U_x_high
-        - log_det_f - log_det_inv
+    delta = (
+        beta_low * U_y_low
+        + beta_high * U_y_high
+        - beta_low * U_x_low
+        - beta_high * U_x_high
+        - log_det_f
+        - log_det_inv
     )
 
+    # Apply energy gating if requested
+    if energy_threshold is not None:
+        mask = (U_x_low <= energy_threshold) & (U_x_high <= energy_threshold)
+        if not mask.any():
+            return torch.tensor(0.0, device=delta.device)
+        delta = delta[mask]
+
+    # Clamp and return
     if clamp:
-        neg_log_alpha = torch.clamp(neg_log_alpha, min=0.0)
-
-    # Optional energy-based masking to drop pathological samples
-    if energy_threshold is not None and energy_threshold > 0:
-        keep_mask = (
-            (U_x_low < energy_threshold)
-            & (U_x_high < energy_threshold)
-            & (U_y_low < energy_threshold)
-            & (U_y_high < energy_threshold)
-        )
-        # Ensure mask is on same device as neg_log_alpha
-        keep_mask = keep_mask.to(neg_log_alpha.device)
-        if keep_mask.any():
-            neg_log_alpha = neg_log_alpha[keep_mask]
-        else:
-            return torch.tensor(1e4, device=device)
-
-    loss = neg_log_alpha.mean()
-    return loss 
+        delta = torch.clamp(delta, min=0.0)
+    return delta.mean() 

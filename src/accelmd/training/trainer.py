@@ -226,6 +226,7 @@ class PTSwapTrainer:
         n_batches = 0
         clipped_batches = 0
         n_samples = 0
+        
         for batch in loader:
             # Move tensors to device (only coords present for now)
             batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}

@@ -17,6 +17,10 @@ __all__ = [
     "create_run_config",
     "get_energy_threshold",
     "set_openmm_threads",
+    "get_training_peptides",
+    "get_eval_peptides",
+    "is_multi_peptide_mode",
+    "get_multi_batching_mode",
 ]
 
 
@@ -54,15 +58,116 @@ def load_config(path: str) -> Dict[str, Any]:
     cfg["_config_path"] = os.path.abspath(path)
 
     # ------------------------------------------------------------------
-    # Auto-fill dataset paths & model.num_atoms from `peptide_code`
+    # Validate and process multi-peptide configuration
     # ------------------------------------------------------------------
-    if "peptide_code" in cfg:
-        _autofill_from_peptide(cfg)
+    _validate_multi_peptide_config(cfg)
+    
+    # ------------------------------------------------------------------
+    # Auto-fill dataset paths & model.num_atoms from `peptide_code` or multi-peptide mode
+    # ------------------------------------------------------------------
+    mode = cfg.get("mode", "single")
+    if mode == "single":
+        if "peptide_code" in cfg:
+            _autofill_from_peptide(cfg)
+    elif mode == "multi":
+        # Multi-peptide mode handled separately in data loading
+        # Validation already done by _validate_multi_peptide_config
+        pass
 
     # Apply system-level environment tweaks (e.g. OpenMM CPU thread count)
     set_openmm_threads(cfg)
 
     return cfg
+
+
+def _validate_multi_peptide_config(cfg: Dict[str, Any]) -> None:
+    """Validate multi-peptide configuration parameters."""
+    mode = cfg.get("mode", "single")
+    
+    if mode not in ["single", "multi"]:
+        raise ValueError(f"mode must be 'single' or 'multi', got '{mode}'")
+    
+    if mode == "multi":
+        # Check required peptides configuration
+        if "peptides" not in cfg:
+            raise ValueError("'peptides' key is required when mode == 'multi'")
+        
+        peptides_cfg = cfg["peptides"]
+        if not isinstance(peptides_cfg, dict):
+            raise ValueError("'peptides' must be a dictionary")
+        
+        if "train" not in peptides_cfg:
+            raise ValueError("'peptides.train' is required when mode == 'multi'")
+        
+        train_peptides = peptides_cfg["train"]
+        if not isinstance(train_peptides, list) or len(train_peptides) == 0:
+            raise ValueError("'peptides.train' must be a non-empty list")
+        
+        # Validate eval peptides (optional, defaults to train)
+        eval_peptides = peptides_cfg.get("eval", train_peptides)
+        if not isinstance(eval_peptides, list) or len(eval_peptides) == 0:
+            raise ValueError("'peptides.eval' must be a non-empty list if specified")
+        
+        # Store normalized eval peptides
+        cfg["peptides"]["eval"] = eval_peptides
+        
+        # Check architecture compatibility
+        model_cfg = cfg.get("model", {})
+        architecture = model_cfg.get("architecture", "simple")
+        if architecture == "simple":
+            raise ValueError("Simple architecture cannot be used in multi-peptide mode")
+        
+        # Validate multi_mode configuration
+        multi_mode_cfg = cfg.get("multi_mode", {})
+        batching = multi_mode_cfg.get("batching", "padding")
+        if batching not in ["padding", "uniform"]:
+            raise ValueError(f"multi_mode.batching must be 'padding' or 'uniform', got '{batching}'")
+        
+        # Set defaults
+        cfg.setdefault("multi_mode", {})["batching"] = batching
+        
+    elif mode == "single":
+        # In single mode, peptides and multi_mode should not be used
+        if "peptides" in cfg:
+            import warnings
+            warnings.warn("'peptides' key ignored in single mode")
+        if "multi_mode" in cfg:
+            import warnings
+            warnings.warn("'multi_mode' key ignored in single mode")
+
+
+def get_training_peptides(cfg: Dict[str, Any]) -> List[str]:
+    """Get list of peptides for training based on mode."""
+    mode = cfg.get("mode", "single")
+    if mode == "single":
+        return [cfg["peptide_code"]]
+    elif mode == "multi":
+        return cfg["peptides"]["train"]
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+
+def get_eval_peptides(cfg: Dict[str, Any]) -> List[str]:
+    """Get list of peptides for evaluation based on mode."""
+    mode = cfg.get("mode", "single")
+    if mode == "single":
+        return [cfg["peptide_code"]]
+    elif mode == "multi":
+        return cfg["peptides"]["eval"]
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+
+def is_multi_peptide_mode(cfg: Dict[str, Any]) -> bool:
+    """Check if configuration is in multi-peptide mode."""
+    return cfg.get("mode", "single") == "multi"
+
+
+def get_multi_batching_mode(cfg: Dict[str, Any]) -> str:
+    """Get batching mode for multi-peptide training."""
+    if not is_multi_peptide_mode(cfg):
+        raise ValueError("Not in multi-peptide mode")
+    return cfg.get("multi_mode", {}).get("batching", "padding")
 
 
 def save_config(cfg: Dict[str, Any], path: str) -> None:

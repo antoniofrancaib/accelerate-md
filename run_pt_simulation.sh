@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4           # CPU cores per task
 #SBATCH --gres=gpu:1                # Request 1 GPU
-#SBATCH --time=24:00:00             # Wall-time
+#SBATCH --time=32:00:00             # Wall-time
 #SBATCH --output=logs/pt_simulation_%j.out
 #SBATCH --error=logs/pt_simulation_%j.err
 #SBATCH -p ampere                   # CSD3 GPU partition
@@ -48,8 +48,8 @@ echo "Total steps    : $TOTAL_STEPS"
 echo "===================================================="
 
 # Run the simulation
-stdbuf -oL python -u run_pt_simulation.py <<PY
-import run_pt_simulation as rps
+stdbuf -oL python -u run_pt_simulation_AA.py <<PY
+import run_pt_simulation_AA as rps
 cfg = rps.config.copy()
 cfg["name"] = "$NAME"
 cfg["num_steps"] = int("$TOTAL_STEPS")
