@@ -1,0 +1,20 @@
+name: accelmd
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch
+  - numpy
+  - matplotlib
+  - tqdm
+  - pyyaml
+  - mdtraj
+  - openmm
+  - openmmtools
+  - wandb
+  - scipy
+  - scikit-learn
+  - pot
+  - pip 
+  - pip:
+      - git+https://github.com/VincentStimper/boltzmann-generators.git
