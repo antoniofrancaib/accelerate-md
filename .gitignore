@@ -45,6 +45,7 @@ configs/wandb.yaml
 .cache/
 **/cache/
 
-# Ignore non-Python artifacts in experiments (track only code)
+# Ignore non-Python artifacts in experiments – keep only .py files
 experiments/**
+!experiments/**/
 !experiments/**/*.py
