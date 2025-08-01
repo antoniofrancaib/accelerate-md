@@ -1,18 +1,12 @@
 This is the repository for the MLMI MPhil project: Accelerating Molecular Dynamics via Neural Networks. (work still in progress)
 
 conda activate accelmd && \
-python -u main.py \
-       --config configs/multi_graph_01.yaml \
-       --evaluate \
-       --temp-pair 0 1 \
-       --checkpoint outputs/multi_graph_01/pair_0_1/models/best_model_epoch19.pt \
-       --num-eval-samples 1000
-
-conda activate accelmd && \
 sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 1" \
        run_pt_swap_flows.sh
 
-conda activate accelmd && python main.py --config configs/multi_graph_01.yaml --temp-pair 0 1 --epochs 50
+conda activate accelmd && python -u main.py --config configs/AA_simple_01.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/AA_simple/pair_0_1/models/best_model_epoch2986.pt --num-eval-samples 1000
+
+conda activate accelmd && python main.py --config configs/multi_transformer.yaml --temp-pair 1 2 --epochs 50
 
 Great docs of this repo: https://deepwiki.com/antoniofrancaib/accelerate-md
 

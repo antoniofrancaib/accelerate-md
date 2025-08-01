@@ -1,4 +1,4 @@
-experiment_name: "multi_graph_01"
+experiment_name: "multi_transformer_01"
 
 # Multi-peptide mode configuration
 mode: multi           # Enable multi-peptide training
@@ -19,20 +19,19 @@ temperatures:
 
 # Adjacent temperature pairs to train
 temperature_pairs:
-  - [0, 1]
+  - [1, 2]
 
 # Data section - paths automatically determined from peptides
 data:
   subsample_rate: 10000
   filter_chirality: false
   center_coordinates: false
-  augment_coordinates: false  # Enable random rotation augmentation
+  augment_coordinates: true  # Enable random rotation augmentation
   
 # Model hyper-parameters - MUST use graph or transformer architecture
 model:
   # Architecture: MUST be "graph" or "transformer" for multi-peptide mode
-  architecture: "graph"  # Options: "graph", "transformer"
-  
+  architecture: "transformer"  # Options: "graph", "transformer"
   flow_layers: 8
   hidden_dim: 512
   
@@ -52,23 +51,19 @@ model:
   # Graph-specific parameters (only used when architecture="graph")
   graph:
     atom_vocab_size: 4              # H, C, N, O
-    atom_embed_dim: 256              # Dimension of atom type embeddings
-    hidden_dim: 512                 # Hidden dimension for message passing
-    # Scale-range annealing for graph flow
-    scale_range: 0.05               # Initial log-scale amplitude (~±5 %)
-    scale_range_end: 0.15           # Final amplitude (~±15 %)
-    scale_range_schedule_epochs: 20 # Epochs over which to anneal
+    atom_embed_dim: 64              # Dimension of atom type embeddings
+    hidden_dim: 256                 # Hidden dimension for message passing
     num_mp_layers: 3                # Number of message-passing layers per coupling layer
 
 # Training hyper-parameters
 training:
   batch_size: 32      # Smaller batch size for mixed peptide training
   learning_rate: 0.0001
-  num_epochs: 500
+  num_epochs: 50
   val_split: 0.1
   early_stopping_patience: 25
   clip_grad_norm: 5.0
-  warmup_epochs: 20
+  warmup_epochs: 0
   min_lr: 0.00005
   lr_factor: 0.3
   lr_patience: 2
