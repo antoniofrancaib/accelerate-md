@@ -1,4 +1,4 @@
-experiment_name: "multi_transformer_01"
+experiment_name: "multi_transformer"
 
 # Multi-peptide mode configuration
 mode: multi           # Enable multi-peptide training

@@ -35,10 +35,10 @@ def load_model_and_compute_acceptance(model_type: str, pair: tuple, device: str 
     
     # Use the exact same logic as main.py
     if model_type == "simple":
-        config_path = str(project_root / "configs/AA_simple_01.yaml")
-        epoch_map = {(0, 1): 2986, (1, 2): 929, (2, 3): 925, (3, 4): 926}
+        config_path = str(project_root / "configs/AA_simple.yaml")
+        epoch_map = {(0, 1): 2986, (1, 2): 1231, (2, 3): 931, (3, 4): 892}
     elif model_type == "transformer": 
-        config_path = str(project_root / "configs/multi_transformer_01.yaml")
+        config_path = str(project_root / "configs/multi_transformer.yaml")
         epoch_map = {(0, 1): 48, (1, 2): 94, (2, 3): 70, (3, 4): 84}
     else:
         raise ValueError(f"Unknown model type: {model_type}")

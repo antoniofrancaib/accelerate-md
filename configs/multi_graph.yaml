@@ -43,9 +43,9 @@ model:
     hidden_dim: 512                 # Hidden dimension for message passing
     # Scale-range annealing for graph flow
     scale_range: 0.05               # Initial log-scale amplitude (~±5 %)
-    scale_range_end: 0.25           # Final amplitude (~±15 %)
+    scale_range_end: 0.15           # Final amplitude (~±15 %)
     scale_range_schedule_epochs: 20 # Epochs over which to anneal
-    num_mp_layers: 6                # Number of message-passing layers per coupling layer
+    num_mp_layers: 3                # Number of message-passing layers per coupling layer
 
 # Training hyper-parameters
 training:
