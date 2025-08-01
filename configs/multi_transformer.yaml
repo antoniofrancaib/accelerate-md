@@ -19,7 +19,12 @@ temperatures:
 
 # Adjacent temperature pairs to train
 temperature_pairs:
+  - [0, 1]
   - [1, 2]
+  - [2, 3]
+  - [3, 4]
+  - [0, 4]
+  - [0, 2]
 
 # Data section - paths automatically determined from peptides
 data:
@@ -71,8 +76,8 @@ training:
   # Loss component weights
   nll_start: 1.0      # NLL weight at training start
   nll_end: 1.0        # NLL weight at training end
-  acc_start: 0.0      # Acceptance loss weight at start
-  acc_end: 0.5        # Acceptance loss weight at end
+  acc_start: 1.0      # Acceptance loss weight at start
+  acc_end: 1.0        # Acceptance loss weight at end
 
 # Output directories
 output:

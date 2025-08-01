@@ -8,6 +8,8 @@ conda activate accelmd && python -u main.py --config configs/multi_graph.yaml --
 
 conda activate accelmd && python main.py --config configs/multi_graph.yaml --temp-pair 1 2 --epochs 3000
 
+conda activate accelmd && python main.py --config configs/multi_transformer.yaml
+
 Great docs of this repo: https://deepwiki.com/antoniofrancaib/accelerate-md
 
 Toy [notebook](https://github.com/antoniofrancaib/accelerate-md/blob/main/notebooks/toy.ipynb) &nbsp; [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/antoniofrancaib/accelerate-md/blob/main/notebooks/toy.ipynb)
