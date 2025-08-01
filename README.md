@@ -6,7 +6,7 @@ sbatch --export=TRAIN_MODE=single,TEMP_PAIR="1 2" \
 
 conda activate accelmd && python -u main.py --config configs/multi_graph.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/multi_graph/pair_0_1/models/best_model_epoch1475.pt --num-eval-samples 1000
 
-conda activate accelmd && python main.py --config configs/multi_graph.yaml --temp-pair 1 2 --epochs 3000
+conda activate accelmd && python main.py --config configs/multi_transformer.yaml --temp-pair 1 2 --epochs 300
 
 conda activate accelmd && python main.py --config configs/multi_transformer.yaml
 
