@@ -60,7 +60,7 @@ model:
 training:
   batch_size: 32      # Smaller batch due to much larger model (was 64)
   learning_rate: 0.0001  # Lower LR for more careful training (was 0.0001)
-  num_epochs: 3000     # More epochs for larger model (was 100)
+  num_epochs: 2000     # More epochs for larger model (was 100)
   val_split: 0.1
   early_stopping_patience: 100  # More patience for larger model (was 50)
   clip_grad_norm: 10.0  # Higher grad clipping for stability (was 5.0)
