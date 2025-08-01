@@ -267,11 +267,11 @@ class PTSwapTransformerFlow(nn.Module):
             
         for layer in layers:
             if layer.transformed_vars == "positions":
-                # Transform coordinates
+                # Transform coordinates - use CURRENT state for conditioning (before transformation)
                 scale, shift = layer._get_scale_and_shift(
                     atom_types=atom_types,
-                    z_coords=z_coords,
-                    z_velocs=z_velocs,
+                    z_coords=z_coords,  # Current state before transformation
+                    z_velocs=z_velocs,  # Current state before transformation  
                     x_features=atom_embeddings,
                     x_coords=coordinates,  # Original coords for conditioning
                     x_velocs=velocities,  # Original velocities for conditioning
@@ -280,22 +280,31 @@ class PTSwapTransformerFlow(nn.Module):
                     masked_elements=masked_elements,
                 )
                 
-                # Apply affine transformation to coordinates
-                z_coords = z_coords * scale + shift
+                # Apply proper forward/inverse affine transformation
+                if reverse:
+                    # Inverse transformation: z = (z - shift) / scale
+                    # Add small epsilon to prevent division by zero
+                    z_coords = (z_coords - shift) / (scale + 1e-8)
+                else:
+                    # Forward transformation: z = z * scale + shift
+                    z_coords = z_coords * scale + shift
                 
-                # Update log determinant
+                # Update log determinant with correct signs
                 if return_log_det:
                     # Only count non-masked elements
                     scale_log = torch.log(scale + 1e-8)  # Small epsilon for stability
                     scale_log = scale_log * (~masked_elements).unsqueeze(-1).float()
-                    log_det += scale_log.sum(dim=[1, 2])
+                    if reverse:
+                        log_det -= scale_log.sum(dim=[1, 2])  # Subtract for inverse
+                    else:
+                        log_det += scale_log.sum(dim=[1, 2])  # Add for forward
                     
             else:  # layer.transformed_vars == "velocities"
-                # Transform velocities
+                # Transform velocities - use CURRENT state for conditioning (before transformation)
                 scale, shift = layer._get_scale_and_shift(
                     atom_types=atom_types,
-                    z_coords=z_coords,
-                    z_velocs=z_velocs,
+                    z_coords=z_coords,  # Current state before transformation
+                    z_velocs=z_velocs,  # Current state before transformation
                     x_features=atom_embeddings,
                     x_coords=coordinates,  # Original coords for conditioning
                     x_velocs=velocities,  # Original velocities for conditioning
@@ -304,15 +313,24 @@ class PTSwapTransformerFlow(nn.Module):
                     masked_elements=masked_elements,
                 )
                 
-                # Apply affine transformation to velocities
-                z_velocs = z_velocs * scale + shift
+                # Apply proper forward/inverse affine transformation
+                if reverse:
+                    # Inverse transformation: z = (z - shift) / scale
+                    # Add small epsilon to prevent division by zero
+                    z_velocs = (z_velocs - shift) / (scale + 1e-8)
+                else:
+                    # Forward transformation: z = z * scale + shift
+                    z_velocs = z_velocs * scale + shift
                 
-                # Update log determinant
+                # Update log determinant with correct signs
                 if return_log_det:
                     # Only count non-masked elements
                     scale_log = torch.log(scale + 1e-8)  # Small epsilon for stability
                     scale_log = scale_log * (~masked_elements).unsqueeze(-1).float()
-                    log_det += scale_log.sum(dim=[1, 2])
+                    if reverse:
+                        log_det -= scale_log.sum(dim=[1, 2])  # Subtract for inverse
+                    else:
+                        log_det += scale_log.sum(dim=[1, 2])  # Add for forward
         
         return z_coords, log_det
     
@@ -464,6 +482,23 @@ class PTSwapTransformerFlow(nn.Module):
                         pdb_path=pdb_path,
                         env="implicit"
                     )
+                
+                # CRITICAL FIX: Ensure coordinate dimensions match target expectations
+                expected_dim = sample_target.dim
+                actual_dim = valid_coords.shape[0]
+                
+                if actual_dim != expected_dim:
+                    # This should not happen if data is consistent, but let's handle it gracefully
+                    if actual_dim < expected_dim:
+                        # Pad with zeros (though this is not ideal)
+                        padded_coords = torch.zeros(expected_dim, device=valid_coords.device, dtype=valid_coords.dtype)
+                        padded_coords[:actual_dim] = valid_coords
+                        valid_coords = padded_coords
+                        print(f"Warning: Padded coordinates for {peptide_name} from {actual_dim} to {expected_dim}")
+                    else:
+                        # Truncate (also not ideal)
+                        valid_coords = valid_coords[:expected_dim]
+                        print(f"Warning: Truncated coordinates for {peptide_name} from {actual_dim} to {expected_dim}")
                 
                 # Evaluate target on valid coordinates
                 log_prob = sample_target.log_prob(valid_coords.unsqueeze(0)).squeeze(0)

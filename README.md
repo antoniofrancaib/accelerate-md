@@ -12,7 +12,7 @@ conda activate accelmd && \
 sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 1" \
        run_pt_swap_flows.sh
 
-conda activate accelmd && python main.py --config configs/multi_transformer_01.yaml --temp-pair 0 1 --epochs 50
+conda activate accelmd && python main.py --config configs/multi_graph_01.yaml --temp-pair 0 1 --epochs 50
 
 Great docs of this repo: https://deepwiki.com/antoniofrancaib/accelerate-md
 
