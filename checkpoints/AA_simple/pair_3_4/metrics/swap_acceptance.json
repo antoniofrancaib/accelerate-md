@@ -1,0 +1,6 @@
+{
+  "peptide_code": "AA",
+  "naive_acceptance": 0.21110442638397217,
+  "flow_acceptance": 0.8949835968017578,
+  "num_samples": 20000
+}

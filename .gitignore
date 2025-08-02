@@ -15,7 +15,6 @@ main/
 .vscode/
 docs/ 
 logs/
-checkpoints/
 tests/
 train_flow.sh
 evaluate_flow.sh

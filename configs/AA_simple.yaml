@@ -36,31 +36,11 @@ model:
   flow_layers: 8      # More coupling layers for complex transformations (was 8)
   hidden_dim: 512     # Much larger hidden layers (was 512)
   
-  # Graph-specific parameters (only used when architecture="graph")
-  graph:
-    atom_vocab_size: 4              # H, C, N, O
-    atom_embed_dim: 256             # Much larger atom embeddings (was 128)
-    hidden_dim: 1024                # Much larger hidden dimension for message passing (was 512)
-    num_mp_layers: 6                # Deeper message passing (was 4)
-  
-  # Transformer-specific parameters (only used when architecture="transformer")
-  transformer:
-    atom_vocab_size: 4              # H, C, N, O
-    atom_embed_dim: 32              # Dimension of atom type embeddings
-    transformer_hidden_dim: 128     # Hidden dimension for transformer layers
-    mlp_hidden_layer_dims: [128, 128]  # Hidden layer dimensions for MLPs
-    num_transformer_layers: 2       # Number of transformer encoder layers per coupling layer
-    n_head: 8                       # Number of attention heads
-    dim_feedforward: 2048           # Feedforward dimension in transformer
-    rff_encoding_dim: 64            # Random Fourier Features encoding dimension
-    rff_scale_mean: 1.0             # Mean of RFF frequency scale distribution
-    rff_scale_stddev: 1.0           # Std dev of RFF frequency scale distribution
-
 # Training hyper-parameters - ADJUSTED FOR INCREASED CAPACITY
 training:
   batch_size: 32      # Smaller batch due to much larger model (was 64)
   learning_rate: 0.0001  # Lower LR for more careful training (was 0.0001)
-  num_epochs: 2000     # More epochs for larger model (was 100)
+  num_epochs: 3000     # More epochs for larger model (was 100)
   val_split: 0.1
   early_stopping_patience: 100  # More patience for larger model (was 50)
   clip_grad_norm: 10.0  # Higher grad clipping for stability (was 5.0)
