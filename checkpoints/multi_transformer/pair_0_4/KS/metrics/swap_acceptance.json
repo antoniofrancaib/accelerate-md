@@ -1,0 +1,6 @@
+{
+  "peptide_code": "KS",
+  "naive_acceptance": 0.1,
+  "flow_acceptance": 0.10306357741355895,
+  "num_samples": 20000
+}

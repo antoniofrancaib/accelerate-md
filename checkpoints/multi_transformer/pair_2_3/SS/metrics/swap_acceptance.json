@@ -1,0 +1,6 @@
+{
+  "peptide_code": "SS",
+  "naive_acceptance": 0.28982788901776074,
+  "flow_acceptance": 1.0,
+  "num_samples": 20000
+}

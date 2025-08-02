@@ -6,10 +6,7 @@ sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 2" \
 
 conda activate accelmd && python -u main.py --config configs/AA_simple.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/AA_simple/pair_0_1/models/best_model_epoch2787.pt --num-eval-samples 1000
 
-/Users/marinafranca/Desktop/accelerate-md/outputs/AA_simple/pair_0_1/models/.pt
-/Users/marinafranca/Desktop/accelerate-md/
-
-conda activate accelmd && python main.py --config configs/AK_simple.yaml --temp-pair 1 2 --epochs 3000
+conda activate accelmd && python main.py --config configs/AK_simple.yaml --temp-pair 3 4 --epochs 3000
 
 
 Great docs of this repo: https://deepwiki.com/antoniofrancaib/accelerate-md

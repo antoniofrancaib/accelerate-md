@@ -1,0 +1,6 @@
+{
+  "peptide_code": "AK",
+  "naive_acceptance": 0.3555436515808105,
+  "flow_acceptance": 1.0,
+  "num_samples": 20000
+}

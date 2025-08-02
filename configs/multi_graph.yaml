@@ -68,8 +68,8 @@ training:
   # Loss component weights
   nll_start: 1.0      # NLL weight at training start
   nll_end: 1.0        # NLL weight at training end
-  acc_start: 1.0      # Acceptance loss weight at start
-  acc_end: 1.0        # Acceptance loss weight at end
+  acc_start: 0.0      # Acceptance loss weight at start
+  acc_end: 0.5        # Acceptance loss weight at end
 
 # Output directories
 output:
