@@ -34,7 +34,7 @@ mkdir -p logs
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # --------- User-configurable section ----------
-CONFIG="${CONFIG:-configs/multi_transformer.yaml}"
+CONFIG="${CONFIG:-configs/multi_graph.yaml}"
 TRAIN_MODE="${TRAIN_MODE:-all}"   # all | single
 TEMP_PAIR="${TEMP_PAIR:-1 2}"      # used only if TRAIN_MODE==single
 EPOCHS_OVERRIDE="${EPOCHS:-}"      # optionally override epochs
