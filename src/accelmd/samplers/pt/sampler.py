@@ -170,6 +170,7 @@ class ParallelTempering(LangevinDynamics):
         mh: bool = True,
         device: str | torch.device = "cpu",
         point_estimator: bool = False,
+        log_history: bool = False,
     ) -> None:
         n_temp, n_chains, dim = x.shape
         self.num_temperatures = n_temp
@@ -190,6 +191,18 @@ class ParallelTempering(LangevinDynamics):
         self.base_energy = energy_func  # unscaled
         self.swap_rate = 0.0
         self.swap_rates: List[float] = []
+        
+        # History logging for round-trip analysis
+        self.log_history = log_history
+        self.history: List[Tensor] = [] if log_history else []
+        
+        # Track which walker is at which temperature (for round-trip analysis)
+        if log_history:
+            # Initially, walker i is at temperature i (identity mapping)
+            # temp_assignment[walker_id] = temperature_index
+            total_walkers = n_temp * n_chains
+            self.temp_assignment = torch.arange(n_temp).repeat_interleave(n_chains).to(device)
+            self.history.append(self.temp_assignment.clone())
 
     # ------------------------------------------------------------------
     # Replica-exchange utilities
@@ -214,6 +227,15 @@ class ParallelTempering(LangevinDynamics):
         # Swap chains in-place where accepted
         self.x[slice_a] = torch.where(accept, chain_b, chain_a)
         self.x[slice_b] = torch.where(accept, chain_a, chain_b)
+        
+        # Update temperature assignments for history tracking
+        if self.log_history:
+            # For accepted swaps, exchange the temperature assignments
+            accept_flat = accept.squeeze(-1)  # [n_chains]
+            temp_a_old = self.temp_assignment[slice_a].clone()
+            temp_b_old = self.temp_assignment[slice_b].clone()
+            self.temp_assignment[slice_a] = torch.where(accept_flat, temp_b_old, temp_a_old)
+            self.temp_assignment[slice_b] = torch.where(accept_flat, temp_a_old, temp_b_old)
 
         return accept_prob.mean().item()
 
@@ -223,6 +245,10 @@ class ParallelTempering(LangevinDynamics):
             rates.append(self._attempt_swap(i, i - 1))
         self.swap_rate = float(np.mean(rates)) if rates else 0.0
         self.swap_rates = rates
+        
+        # Record current temperature assignments for round-trip analysis
+        if self.log_history:
+            self.history.append(self.temp_assignment.clone())
 
     # ------------------------------------------------------------------
     def sample(self):  # type: ignore[override]

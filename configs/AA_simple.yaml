@@ -22,7 +22,7 @@ temperature_pairs:
 # Data section – paths will be filled automatically from `peptide_code` unless
 # explicitly overridden.
 data:
-  subsample_rate: 10000    # Use much more data (was 100) - 10x more samples
+  subsample_rate: 1000    # Use much more data (was 100) - 10x more samples
   filter_chirality: false
   center_coordinates: false
   augment_coordinates: false #to be implemented

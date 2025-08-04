@@ -1,0 +1,72 @@
+# Experiment checkpoint configurations for flow-enhanced PT simulations
+#
+# This file centralizes all trained model checkpoint paths for different architectures
+# and peptides, making it easy to switch between experiments without hardcoding paths.
+
+checkpoints:
+  # Simple architecture (coordinate-to-coordinate flows)
+  simple:
+    AA:
+      pair_0_1: "checkpoints/AA_simple/pair_0_1/models/best_model_epoch2787.pt"
+      pair_1_2: "checkpoints/AA_simple/pair_1_2/models/best_model_epoch1231.pt"
+      pair_2_3: "checkpoints/AA_simple/pair_2_3/models/best_model_epoch1301.pt"
+      pair_3_4: "checkpoints/AA_simple/pair_3_4/models/best_model_epoch773.pt"
+    
+    AK:
+      # Add AK simple checkpoints here when available
+      pair_0_1: null
+      pair_1_2: null
+      pair_2_3: null
+      pair_3_4: null
+  
+  # Graph architecture (GNN-conditioned flows)
+  graph:
+    multi_peptide:
+      # Add AA graph checkpoints here when available
+      pair_0_1: null
+      pair_1_2: null
+      pair_2_3: null
+      pair_3_4: null
+
+  # Transformer architecture (multi-peptide transformer flows)
+  transformer:
+    # Multi-peptide transformer models (trained on all peptides)
+    multi_peptide:
+      pair_0_1: "checkpoints/multi_transformer/pair_0_1/models/best_model_epoch331.pt"
+      pair_1_2: "checkpoints/multi_transformer/pair_1_2/models/best_model_epoch325.pt"
+      pair_2_3: "checkpoints/multi_transformer/pair_2_3/models/best_model_epoch257.pt"
+      pair_3_4: "checkpoints/multi_transformer/pair_3_4/models/best_model_epoch254.pt"
+    
+# Configuration templates for each architecture
+configs:
+  simple:
+    # Reference to the config file used for training simple architectures
+    config_file: "configs/AA_simple.yaml"
+    
+  graph:
+    # Reference to the config file used for training graph architectures  
+    config_file: "configs/multi_graph.yaml"
+    
+  transformer:
+    # Reference to the config file used for training transformer architectures
+    config_file: "configs/multi_transformer.yaml"
+
+# Experiment metadata
+metadata:
+  description: "Checkpoint locations for flow-enhanced parallel tempering experiments"
+  architectures:
+    simple: "Basic coordinate-to-coordinate normalizing flows"
+    graph: "Graph neural network conditioned flows"
+    transformer: "Self-attention based flows with positional encoding"
+  
+  temperature_pairs:
+    pair_0_1: "Lowest to second temperature"
+    pair_1_2: "Second to third temperature" 
+    pair_2_3: "Third to fourth temperature"
+    pair_3_4: "Fourth to highest temperature"
+  
+  notes:
+    - "Set checkpoint paths to null if models are not available"
+    - "Multi-peptide transformer models work across different peptides"
+    - "Single-peptide models are specific to one peptide type"
+    - "Checkpoint paths are relative to the project root directory"

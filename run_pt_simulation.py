@@ -137,7 +137,7 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = {
-        "name": "KK",  # gmm or aldp_inter or aldp_cart
+        "name": "AA",  # gmm or aldp_inter or aldp_cart
         "temp_schedule": "geom",  # geom/linear, we usually use the geometrical schedule, but you could play
         "temp_low": 1.0,
         "temp_high": 5.,

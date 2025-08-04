@@ -28,7 +28,7 @@ temperature_pairs:
 
 # Data section - paths automatically determined from peptides
 data:
-  subsample_rate: 10000
+  subsample_rate: 1000
   filter_chirality: false
   center_coordinates: false
   augment_coordinates: false  # Enable random rotation augmentation
