@@ -1,0 +1,100 @@
+experiment_name: "multi_graph"
+
+# Multi-peptide mode configuration
+mode: multi           # Enable multi-peptide training
+
+peptides:
+  train: [AA, SS, KK, AS, AK, SK] # Peptides used for training
+  eval: [AA, SS, KK, AS, AK, SK, SA, KA, KS]     # Peptides used for evaluation (optional, defaults to train)
+
+multi_mode:
+  batching: uniform    # Options: "padding" (default) or "uniform"
+
+# Device selection: "auto" | "cpu" | "cuda"
+device: "auto"
+
+# Temperature ladder (must match the PT dataset)
+temperatures:
+  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+
+# Adjacent temperature pairs to train
+temperature_pairs:
+  - [0, 1]
+
+# Data section - paths automatically determined from peptides
+data:
+  subsample_rate: 10000
+  filter_chirality: false
+  center_coordinates: false
+  augment_coordinates: false  # Enable random rotation augmentation
+  
+# Model hyper-parameters - MUST use graph or transformer architecture
+model:
+  # Architecture: MUST be "graph" or "transformer" for multi-peptide mode
+  architecture: "graph"  # Options: "graph", "transformer"
+  
+  flow_layers: 8
+  hidden_dim: 512
+  
+  # Transformer-specific parameters (only used when architecture="transformer")
+  transformer:
+    atom_vocab_size: 4              # H, C, N, O
+    atom_embed_dim: 32              # Dimension of atom type embeddings
+    transformer_hidden_dim: 128     # Hidden dimension for transformer layers
+    mlp_hidden_layer_dims: [128, 128]  # Hidden layer dimensions for MLPs
+    num_transformer_layers: 2       # Number of transformer encoder layers per coupling layer
+    n_head: 8                       # Number of attention heads
+    dim_feedforward: 2048           # Feedforward dimension in transformer
+    rff_encoding_dim: 64            # Random Fourier Features encoding dimension
+    rff_scale_mean: 1.0             # Mean of RFF frequency scale distribution
+    rff_scale_stddev: 1.0           # Std dev of RFF frequency scale distribution
+
+  # Graph-specific parameters (only used when architecture="graph")
+  graph:
+    atom_vocab_size: 4              # H, C, N, O
+    atom_embed_dim: 256              # Dimension of atom type embeddings
+    hidden_dim: 512                 # Hidden dimension for message passing
+    # Scale-range annealing for graph flow
+    scale_range: 0.05               # Initial log-scale amplitude (~±5 %)
+    scale_range_end: 0.15           # Final amplitude (~±15 %)
+    scale_range_schedule_epochs: 20 # Epochs over which to anneal
+    num_mp_layers: 3                # Number of message-passing layers per coupling layer
+
+# Training hyper-parameters
+training:
+  batch_size: 32      # Smaller batch size for mixed peptide training
+  learning_rate: 0.0001
+  num_epochs: 3000
+  val_split: 0.1
+  early_stopping_patience: 25
+  clip_grad_norm: 5.0
+  warmup_epochs: 20
+  min_lr: 0.00005
+  lr_factor: 0.3
+  lr_patience: 2
+
+  # Loss component weights
+  nll_start: 1.0      # NLL weight at training start
+  nll_end: 1.0        # NLL weight at training end
+  acc_start: 0.0      # Acceptance loss weight at start
+  acc_end: 0.5        # Acceptance loss weight at end
+
+# Output directories
+output:
+  base_dir: "outputs"
+
+# System parameters
+system:
+  temperature: 300.0
+  energy_cut: 1.0e8 
+  energy_max: 1.0e20 
+  n_threads: 64
+  transform: cartesian 
+  shift_dih: false
+  env: implicit 
+
+# Target configuration (not used in multi-peptide mode, automatically determined)
+target:
+  name: dipeptide
+  kwargs:
+    env: implicit 

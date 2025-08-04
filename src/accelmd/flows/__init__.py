@@ -8,11 +8,11 @@ from .pt_swap_transformer_flow import PTSwapTransformerFlow
 from .transformer_coupling_layer import TransformerCouplingLayer
 from .transformer_block import TransformerBlock, TransformerConfig
 from .rff_position_encoder import RFFPositionEncoder, RFFPositionEncoderConfig
-# Legacy graph coupling layer removed - now using Timewarp architecture
+# Legacy graph coupling layer removed - now using equivariant architecture
 from .graph_embedding import MessagePassingGNN
 from .mlp import MLP
-from .timewarp_flow_base import PTFlow, PTSequentialFlow, PTNVPCouplingLayer
-from .timewarp_equivariant_coupling import TimewarpEquivariantCouplingLayer
+from .equivariant_flow_base import PTFlow, PTSequentialFlow, PTNVPCouplingLayer
+from .equivariant_coupling import EquivariantCouplingLayer
 
 __all__ = [
     "FlowModule",
@@ -26,11 +26,11 @@ __all__ = [
     "TransformerConfig",
     "RFFPositionEncoder",
     "RFFPositionEncoderConfig",
-    # "MessagePassingCouplingLayer",  # Removed - using Timewarp architecture
+    # "MessagePassingCouplingLayer",  # Removed - using equivariant architecture
     "MessagePassingGNN",
     "MLP",
     "PTFlow",
     "PTSequentialFlow", 
     "PTNVPCouplingLayer",
-    "TimewarpEquivariantCouplingLayer",
+    "EquivariantCouplingLayer",
 ] 

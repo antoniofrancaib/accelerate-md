@@ -20,8 +20,8 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional, Tuple, Dict, Any
 
-from .timewarp_flow_base import PTSequentialFlow
-from .timewarp_equivariant_coupling import TimewarpEquivariantCouplingLayer
+from .equivariant_flow_base import PTSequentialFlow
+from .equivariant_coupling import EquivariantCouplingLayer
 from ..targets import build_target
 
 __all__ = ["PTSwapGraphFlow"]
@@ -101,7 +101,7 @@ class PTSwapGraphFlow(nn.Module):
         layers = []
         for i in range(num_layers):
             phase = i % 2
-            layer = TimewarpEquivariantCouplingLayer(
+            layer = EquivariantCouplingLayer(
                 phase=phase,
                 atom_vocab_size=atom_vocab_size,
                 atom_embed_dim=atom_embed_dim,

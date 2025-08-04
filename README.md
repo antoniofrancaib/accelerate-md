@@ -6,12 +6,10 @@ sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 2" \
 
 conda activate accelmd && python -u main.py --config configs/multi_graph.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/multi_graph/pair_0_1/models/best_model_epoch1475.pt --num-eval-samples 20000
 
-/Users/marinafranca/Desktop/accelerate-md/
 
 
-/Users/marinafranca/Desktop/accelerate-md/
 
-conda activate accelmd && python main.py --config configs/AA_simple.yaml --temp-pair 2 3 --epochs 3000
+conda activate accelmd && python main.py --config configs/mutli_graph.yaml --temp-pair 0 1 --epochs 3000
 
 git fetch origin && git reset --hard origin/main
 

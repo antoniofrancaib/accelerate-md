@@ -23,7 +23,7 @@ checkpoints:
   graph:
     multi_peptide:
       # Add AA graph checkpoints here when available
-      pair_0_1: null
+      pair_0_1: checkpoints/multi_graph/pair_0_1/models/best_model_epoch1475.pt
       pair_1_2: null
       pair_2_3: null
       pair_3_4: null
