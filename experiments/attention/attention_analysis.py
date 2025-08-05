@@ -693,29 +693,32 @@ class AttentionAnalyzer:
         ax2 = fig.add_subplot(122, projection='3d')
         ax2.scatter(coords[:, 0], coords[:, 1], coords[:, 2], s=50, c='gray', alpha=0.7)
         
-        # Use a more principled threshold: same number of edges as chemical bonds
-        # Get the top-k attention weights where k = number of chemical bonds
-        n_bonds = int(adjacency_matrix.sum() / 2)  # Divide by 2 since adjacency is symmetric
-        
-        # Get all off-diagonal attention values
-        off_diagonal_mask = ~np.eye(N, dtype=bool)
-        attention_values = attention_matrix[off_diagonal_mask]
-        threshold = np.percentile(attention_values, 100 * (1 - 2*n_bonds / (N*(N-1))))
-        
-        print(f"Using threshold {threshold:.4f} to select top {2*n_bonds} attention edges (matching {n_bonds} chemical bonds)")
+        # Show only the highest attended neighbor for each atom
+        print("Creating sparse attention graph: each atom -> highest attended neighbor")
         
         for i in range(N):
-            for j in range(i+1, N):
-                if attention_matrix[i, j] > threshold:
-                    # Color by whether it's in chemical bonds (blue) or novel (orange)
-                    color = 'blue' if adjacency_matrix[i, j] > 0.5 else 'orange'
-                    alpha = min((attention_matrix[i, j] - threshold) / (attention_matrix.max() - threshold), 1.0)
-                    ax2.plot([coords[i, 0], coords[j, 0]], 
-                            [coords[i, 1], coords[j, 1]], 
-                            [coords[i, 2], coords[j, 2]], 
-                            color=color, alpha=alpha, linewidth=2)
+            # Find the highest attended neighbor for atom i (excluding self)
+            attention_row = attention_matrix[i].copy()
+            attention_row[i] = -1  # Exclude self-attention
+            
+            max_neighbor = np.argmax(attention_row)
+            max_attention = attention_row[max_neighbor]
+            
+            # Color by whether this connection is a chemical bond (blue) or novel (orange)
+            color = 'blue' if adjacency_matrix[i, max_neighbor] > 0.5 else 'orange'
+            
+            # Draw the connection with intensity based on attention strength
+            attention_normalized = (max_attention - attention_matrix.min()) / (attention_matrix.max() - attention_matrix.min())
+            alpha = max(0.3, attention_normalized)  # Ensure minimum visibility
+            
+            ax2.plot([coords[i, 0], coords[max_neighbor, 0]], 
+                    [coords[i, 1], coords[max_neighbor, 1]], 
+                    [coords[i, 2], coords[max_neighbor, 2]], 
+                    color=color, alpha=alpha, linewidth=2)
+            
+            print(f"  Atom {i:2d} → Atom {max_neighbor:2d} (attention: {max_attention:.4f}, {'bond' if adjacency_matrix[i, max_neighbor] > 0.5 else 'novel'})")
         
-        ax2.set_title('Attention Connections\n(Data-Driven)')
+        ax2.set_title('Highest Attention per Atom\n(Data-Driven Sparse Graph)')
         ax2.set_xlabel('X (nm)')
         ax2.set_ylabel('Y (nm)')
         ax2.set_zlabel('Z (nm)')

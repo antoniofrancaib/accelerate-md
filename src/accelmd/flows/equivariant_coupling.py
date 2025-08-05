@@ -189,15 +189,16 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         relative_vectors = coord_j - coord_i  # [B, N, N, 3]
         distances = torch.norm(relative_vectors, dim=-1)  # [B, N, N]
         
-        # Step 4: Predict invariant scales
+        # Step 4: Predict invariant scales using molecular bonds
         scales = self._compute_invariant_scales(
-            atom_features, distances, coupling_mask, masked_elements
+            atom_features, distances, coupling_mask, masked_elements,
+            adj_list, edge_batch_idx
         )  # [B, N, 3]
         
-        # Step 5: Predict equivariant shifts
+        # Step 5: Predict equivariant shifts using molecular bonds
         shifts = self._compute_equivariant_shifts(
             coordinates, atom_features, relative_vectors, distances, 
-            coupling_mask, masked_elements
+            coupling_mask, masked_elements, adj_list, edge_batch_idx
         )  # [B, N, 3]
         
         return scales, shifts
@@ -230,29 +231,52 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         distances: Tensor,      # [B, N, N]
         coupling_mask: Tensor,  # [B, N]
         masked_elements: BoolTensor,  # [B, N]
+        adj_list: Optional[Tensor] = None,  # [E, 2] molecular connectivity
+        edge_batch_idx: Optional[Tensor] = None,  # [E] batch indices
     ) -> Tensor:
-        """Compute invariant scaling factors using distance-based features."""
+        """Compute invariant scaling factors using molecular bond connectivity."""
         B, N, _ = atom_features.shape
         device = atom_features.device
         
-        # For each atom, compute mean distance to neighbors (invariant feature)
-        # Exclude self-distances and masked atoms
-        distance_mask = torch.ones_like(distances)  # [B, N, N]
-        distance_mask = distance_mask - torch.eye(N, device=device).unsqueeze(0)  # Remove self
+        # Create neighbor mask based on actual molecular bonds if available
+        if adj_list is not None and edge_batch_idx is not None and len(adj_list) > 0:
+            # Use real molecular connectivity
+            neighbor_mask = torch.zeros(B, N, N, device=device)  # [B, N, N]
+            
+            # Convert edge list to adjacency matrix for each batch
+            for batch_idx in range(B):
+                batch_edges = adj_list[edge_batch_idx == batch_idx]  # Edges for this batch item
+                if len(batch_edges) > 0:
+                    # Make sure indices are within bounds for this molecule
+                    valid_edges = batch_edges[torch.max(batch_edges, dim=1)[0] < N]
+                    if len(valid_edges) > 0:
+                        src_indices = valid_edges[:, 0]
+                        tgt_indices = valid_edges[:, 1]
+                        # Set adjacency (symmetric for undirected molecular graph)
+                        neighbor_mask[batch_idx, src_indices, tgt_indices] = 1.0
+                        neighbor_mask[batch_idx, tgt_indices, src_indices] = 1.0
+            
+
+        else:
+            # Fallback to distance-based connectivity (old behavior)
+            neighbor_mask = torch.ones_like(distances)  # [B, N, N]
+            neighbor_mask = neighbor_mask - torch.eye(N, device=device).unsqueeze(0)  # Remove self
+            
+            # Apply distance cutoff
+            if self.distance_cutoff is not None:
+                neighbor_mask = neighbor_mask * (distances <= self.distance_cutoff).float()
+                
+
         
+        # Apply masking for padded atoms
         if masked_elements is not None:
-            # Don't include masked atoms as neighbors
             valid_neighbors = (~masked_elements).float()  # [B, N]
-            neighbor_mask = valid_neighbors.unsqueeze(1) * valid_neighbors.unsqueeze(2)  # [B, N, N]
-            distance_mask = distance_mask * neighbor_mask
+            valid_mask = valid_neighbors.unsqueeze(1) * valid_neighbors.unsqueeze(2)  # [B, N, N]
+            neighbor_mask = neighbor_mask * valid_mask
         
-        # Apply distance cutoff
-        if self.distance_cutoff is not None:
-            distance_mask = distance_mask * (distances <= self.distance_cutoff).float()
-        
-        # Compute mean distance to valid neighbors (invariant)
-        masked_distances = distances * distance_mask
-        neighbor_counts = distance_mask.sum(dim=-1).clamp(min=1)  # [B, N]
+        # Compute mean distance to bonded neighbors (invariant feature)
+        masked_distances = distances * neighbor_mask
+        neighbor_counts = neighbor_mask.sum(dim=-1).clamp(min=1)  # [B, N]
         mean_distances = masked_distances.sum(dim=-1) / neighbor_counts  # [B, N]
         
         # Create input features for scale network
@@ -282,6 +306,8 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         distances: Tensor,       # [B, N, N]
         coupling_mask: Tensor,   # [B, N]
         masked_elements: BoolTensor,  # [B, N]
+        adj_list: Optional[Tensor] = None,  # [E, 2] molecular connectivity
+        edge_batch_idx: Optional[Tensor] = None,  # [E] batch indices
     ) -> Tensor:
         """Compute equivariant shifts using relative vector combinations.
         
@@ -298,18 +324,37 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         shift_coeffs = torch.tanh(raw_shift_coeffs) * self.shift_range  # now in nm units
         shift_coeffs = shift_coeffs * coupling_mask  # Only for updated atoms
         
-        # Create neighbor mask (same as in scale computation)
-        neighbor_mask = torch.ones_like(distances)  # [B, N, N]
-        neighbor_mask = neighbor_mask - torch.eye(N, device=device).unsqueeze(0)  # Remove self
+        # Create neighbor mask based on actual molecular bonds (same as in scale computation)
+        if adj_list is not None and edge_batch_idx is not None and len(adj_list) > 0:
+            # Use real molecular connectivity
+            neighbor_mask = torch.zeros(B, N, N, device=device)  # [B, N, N]
+            
+            # Convert edge list to adjacency matrix for each batch
+            for batch_idx in range(B):
+                batch_edges = adj_list[edge_batch_idx == batch_idx]  # Edges for this batch item
+                if len(batch_edges) > 0:
+                    # Make sure indices are within bounds for this molecule
+                    valid_edges = batch_edges[torch.max(batch_edges, dim=1)[0] < N]
+                    if len(valid_edges) > 0:
+                        src_indices = valid_edges[:, 0]
+                        tgt_indices = valid_edges[:, 1]
+                        # Set adjacency (symmetric for undirected molecular graph)
+                        neighbor_mask[batch_idx, src_indices, tgt_indices] = 1.0
+                        neighbor_mask[batch_idx, tgt_indices, src_indices] = 1.0
+        else:
+            # Fallback to distance-based connectivity (old behavior)
+            neighbor_mask = torch.ones_like(distances)  # [B, N, N]
+            neighbor_mask = neighbor_mask - torch.eye(N, device=device).unsqueeze(0)  # Remove self
+            
+            # Apply distance cutoff
+            if self.distance_cutoff is not None:
+                neighbor_mask = neighbor_mask * (distances <= self.distance_cutoff).float()
         
+        # Apply masking for padded atoms
         if masked_elements is not None:
             valid_neighbors = (~masked_elements).float()  # [B, N]
             neighbor_validity = valid_neighbors.unsqueeze(1) * valid_neighbors.unsqueeze(2)  # [B, N, N]
             neighbor_mask = neighbor_mask * neighbor_validity
-        
-        # Apply distance cutoff
-        if self.distance_cutoff is not None:
-            neighbor_mask = neighbor_mask * (distances <= self.distance_cutoff).float()
         
         # Limit number of neighbors for computational efficiency
         if self.max_neighbors is not None:

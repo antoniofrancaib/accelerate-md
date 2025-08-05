@@ -201,7 +201,7 @@ class PTSwapGraphFlow(nn.Module):
         if edge_batch_idx is None:
             edge_batch_idx = torch.empty(0, dtype=torch.long, device=device)
         
-        # Apply flow transformation
+        # Apply flow transformation with real molecular connectivity
         output_coords, log_det = self.flow(
             coordinates=coordinates,
             atom_types=atom_types,
