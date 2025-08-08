@@ -6,10 +6,9 @@ sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 2" \
 
 conda activate accelmd && python -u main.py --config configs/multi_transformer_mcmc.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/multi_transformer_mcmc/pair_0_1/models/best_model_epoch47.pt 
 
+cd rds/hpc-work/accelerate-md
 
-python experiments/SAR/evaluate_sar.py --architecture simple --pair 0 1 --peptide AA --num-seeds 10
-
-conda activate accelmd && python main.py --config configs/AA_simple_mcmc.yaml --temp-pair 2 3 --epochs 3000
+conda activate accelmd && python main.py --config configs/multi_architecture_mcmc.yaml --temp-pair 0 1 --epochs 50
 
 git fetch origin && git reset --hard origin/main
 

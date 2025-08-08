@@ -72,6 +72,11 @@ class PTSwapTrainer:
         self.num_epochs = config["training"]["num_epochs"]
         self.early_patience = config["training"].get("early_stopping_patience", 10)
 
+        # Optional: track and plot swap acceptance per epoch
+        t_cfg = config["training"]
+        self.track_epoch_acceptance = t_cfg.get("track_epoch_acceptance", False)
+        self.acceptance_eval_max_batches = t_cfg.get("acceptance_eval_max_batches", 2)
+
         # Output directory for this pair
         self.output_dir = Path(config["output"]["pair_dir"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +97,7 @@ class PTSwapTrainer:
         val_hist = []
         clip_train_hist = []  # fraction of batches where loss was clipped
         clip_val_hist = []
+        acceptance_hist = [] if self.track_epoch_acceptance else None
         for epoch in range(1, self.num_epochs + 1):
             self._current_epoch = epoch
             # Compute current weights via geometric schedule.
@@ -174,6 +180,27 @@ class PTSwapTrainer:
                 ld_std = ld_vals.std().item()
                 print(f"    [epoch {epoch:03d}] log|det J| mean={ld_mean:.3f} ± {ld_std:.3f}")
 
+            # ----------------------------------------------------------
+            # Optional: estimate swap acceptance for the current model
+            # on a few validation batches and record per-epoch history.
+            # ----------------------------------------------------------
+            if self.track_epoch_acceptance:
+                from src.accelmd.evaluation.swap_acceptance import flow_acceptance
+                try:
+                    flow_acc = flow_acceptance(
+                        loader=self.val_loader,
+                        model=self.model,
+                        base_low=self.model.base_low,
+                        base_high=self.model.base_high,
+                        device=str(self.device),
+                        max_batches=self.acceptance_eval_max_batches,
+                    )
+                except Exception as _e:
+                    # Be robust: in case evaluation fails (e.g., missing CPU targets),
+                    # record NaN and continue training without interruption.
+                    flow_acc = float('nan')
+                acceptance_hist.append(flow_acc)
+
         hours = (time.time() - start_time) / 3600.0
 
         # ----------------------------------------------------------
@@ -209,6 +236,31 @@ class PTSwapTrainer:
         plt.legend()
         plt.savefig(clip_path)
         plt.close()
+
+        # Acceptance curve (optional)
+        if self.track_epoch_acceptance and acceptance_hist is not None:
+            import matplotlib.pyplot as plt
+            acc_path = plots_dir / "acceptance_curve.png"
+            plt.figure(figsize=(6,3))
+            plt.plot(epochs, acceptance_hist, label="flow acceptance")
+            plt.xlabel("epoch")
+            plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+            plt.ylabel("swap acceptance")
+            plt.ylim(0, 1)
+            plt.tight_layout()
+            plt.legend()
+            plt.savefig(acc_path)
+            plt.close()
+
+            # Also persist raw values for analysis
+            metrics_dir = self.output_dir / "metrics"
+            metrics_dir.mkdir(exist_ok=True)
+            import json
+            with open(metrics_dir / "acceptance_curve.json", "w") as fh:
+                json.dump({
+                    "epochs": list(range(1, len(acceptance_hist) + 1)),
+                    "flow_acceptance": acceptance_hist,
+                }, fh, indent=2)
 
         return {
             "best_metric": self.best_metric,
