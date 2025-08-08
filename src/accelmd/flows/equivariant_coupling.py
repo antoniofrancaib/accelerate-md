@@ -22,7 +22,6 @@ from typing import Optional, Tuple, List
 
 from .equivariant_flow_base import PTNVPCouplingLayer
 from ..flows.mlp import MLP
-from .rff_position_encoder import RFFPositionEncoder
 
 __all__ = ["EquivariantCouplingLayer"]
 
@@ -84,21 +83,13 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         # Atom type embeddings (invariant features)
         self.atom_embedding = nn.Embedding(atom_vocab_size, atom_embed_dim)
         
-        # RFF position encoder for stronger conditioning (like transformer)
-        self.rff_encoder = RFFPositionEncoder(
-            input_dim=3,
-            encoding_dim=64,
-            scale_mean=1.0,
-            scale_stddev=1.0,
-        )
-        
-        # Input feature dimension
-        self.input_feat_dim = atom_embed_dim + 64  # atom_embed + RFF features
+        # Input feature dimension (only invariant features for provable equivariance)
+        self.input_feat_dim = atom_embed_dim  # atom_embed only
         if temperature_conditioning:
             self.input_feat_dim += 2  # source_temp + target_temp
         
         # Invariant scale network: atom features + distance features → scalar scale
-        # Input: [atom_embed + RFF + temp_features + distance_features]
+        # Input: [atom_embed + temp_features + distance_features]
         # Configurable depth with tapering width
         scale_hidden_dims = [hidden_dim] * (num_mlp_layers - 1) + [hidden_dim // 2]
         self.scale_net = MLP(
@@ -168,14 +159,11 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         # Step 1: Create coupling mask (alternating pattern based on phase)
         coupling_mask = self._create_coupling_mask(atom_types, masked_elements)  # [B, N]
         
-        # Step 2: Compute rich atom features (like transformer)
+        # Step 2: Compute invariant atom features (for provable equivariance)
         atom_embeds = self.atom_embedding(atom_types)  # [B, N, atom_embed_dim]
         
-        # Add RFF position encoding (critical for strong conditioning)
-        coord_rff = self.rff_encoder(coordinates)  # [B, N, 64]
-        
-        # Combine atom embeddings with RFF features
-        atom_features = torch.cat([atom_embeds, coord_rff], dim=-1)  # [B, N, atom_embed_dim + 64]
+        # Use only invariant features (no RFF for strict equivariance)
+        atom_features = atom_embeds  # [B, N, atom_embed_dim]
         
         # Add temperature conditioning if enabled
         if self.temperature_conditioning and source_temp is not None and target_temp is not None:
@@ -419,7 +407,7 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         # Only compute log-det for non-masked elements that are being transformed
         active_mask = coupling_mask
         if masked_elements is not None:
-            active_mask = coupling_mask * (~masked_elements.float())  # [B, N]
+            active_mask = coupling_mask * ((~masked_elements).float())  # [B, N]
         
         # Apply coupling mask to scales and shifts
         scales = scales * active_mask.unsqueeze(-1)  # [B, N, 3]
@@ -490,7 +478,7 @@ class EquivariantCouplingLayer(PTNVPCouplingLayer):
         # Only compute log-det for non-masked elements that are being transformed
         active_mask = coupling_mask
         if masked_elements is not None:
-            active_mask = coupling_mask * (~masked_elements.float())  # [B, N]
+            active_mask = coupling_mask * ((~masked_elements).float())  # [B, N]
         
         # Apply coupling mask to scales and shifts
         scales = scales * active_mask.unsqueeze(-1)  # [B, N, 3]

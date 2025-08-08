@@ -21,7 +21,6 @@ from src.accelmd.utils.ramachandran_plotting import generate_ramachandran_grid
 from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
 from src.accelmd.flows import PTSwapFlow, PTSwapGraphFlow
 from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
-# from src.accelmd.targets.aldp_boltzmann import AldpBoltzmann  # Now using build_target
 from src.accelmd.training.trainer import PTSwapTrainer
 
 

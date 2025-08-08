@@ -40,6 +40,10 @@ class PTTemperaturePairDataset(Dataset):
         Whether to center coordinates (default: True)
     augment_coordinates : bool, optional
         Whether to apply random rotation augmentation (default: False)
+    random_subsample : bool, optional
+        Whether to use random subsampling instead of deterministic (default: False)
+    random_seed : int, optional
+        Random seed for reproducible subsampling (default: None)
     """
     
     def __init__(
@@ -52,6 +56,8 @@ class PTTemperaturePairDataset(Dataset):
         filter_chirality: bool = False,
         center_coordinates: bool = True,
         augment_coordinates: bool = False,
+        random_subsample: bool = False,
+        random_seed: int = None,
     ) -> None:
         self.pt_data_path = Path(pt_data_path)
         self.molecular_data_path = Path(molecular_data_path)
@@ -61,6 +67,8 @@ class PTTemperaturePairDataset(Dataset):
         self.filter_chirality_enabled = filter_chirality
         self.center_coordinates_enabled = center_coordinates
         self.augment_coordinates_enabled = augment_coordinates
+        self.random_subsample = random_subsample
+        self.random_seed = random_seed
         
         # Load PT trajectory data and molecular structure
         self._load_pt_data()
@@ -99,12 +107,41 @@ class PTTemperaturePairDataset(Dataset):
             # Assume pt_data is directly the trajectory tensor
             traj = pt_data
             
-        # Apply subsampling to the steps dimension (dimension 2 for format [temps, chains, steps, coords])
+        # Apply subsampling to the steps dimension
         if self.subsample_rate > 1:
-            if traj.ndim == 4:
-                traj = traj[:, :, ::self.subsample_rate, :]  # subsample steps dimension
+            if self.random_subsample:
+                # Conservative random subsampling: use deterministic subsampling first, then add randomness
+                import numpy as np
+                if self.random_seed is not None:
+                    np.random.seed(self.random_seed)
+                
+                # First, do deterministic subsampling to get the same total number as before
+                if traj.ndim == 4:
+                    traj = traj[:, :, ::self.subsample_rate, :]  # subsample steps dimension
+                else:
+                    traj = traj[::self.subsample_rate]  # fallback for other formats
+                
+                # Then add randomness by shuffling the selected samples
+                if traj.ndim == 4:
+                    # Shape: [temps, chains, steps, coords] - shuffle the steps dimension
+                    n_steps = traj.shape[2]
+                    step_indices = np.arange(n_steps)
+                    np.random.shuffle(step_indices)
+                    traj = traj[:, :, step_indices, :]
+                    print(f"Random shuffle: shuffled {n_steps} pre-selected samples (seed: {self.random_seed})")
+                else:
+                    # Shape: [steps*chains, temps, coords] - shuffle the samples dimension
+                    n_samples = traj.shape[0]
+                    sample_indices = np.arange(n_samples)
+                    np.random.shuffle(sample_indices)
+                    traj = traj[sample_indices]
+                    print(f"Random shuffle: shuffled {n_samples} pre-selected samples (seed: {self.random_seed})")
             else:
-                traj = traj[::self.subsample_rate]  # fallback for other formats
+                # Deterministic subsampling (original behavior)
+                if traj.ndim == 4:
+                    traj = traj[:, :, ::self.subsample_rate, :]  # subsample steps dimension
+                else:
+                    traj = traj[::self.subsample_rate]  # fallback for other formats
             
         # Extract coordinates for our temperature pair
         low_idx, high_idx = self.temp_pair

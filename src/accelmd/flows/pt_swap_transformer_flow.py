@@ -168,7 +168,7 @@ class PTSwapTransformerFlow(nn.Module):
     def _create_padding_mask(self, atom_types: Tensor) -> torch.BoolTensor:
         """Create padding mask from atom types.
         
-        Assumes atom type 0 is padding (or we can detect padding from zeros).
+        Treat only negative atom type indices as padding.
         
         Parameters
         ----------
@@ -181,8 +181,8 @@ class PTSwapTransformerFlow(nn.Module):
             Padding mask (True for padded positions)
         """
         # Keep atom_types on its original device
-        # Simple approach: assume atom_type == 0 means padding
-        return atom_types == 0
+        # Only negative indices indicate padding; real atoms use non-negative indices
+        return atom_types < 0
     
     def forward(
         self,

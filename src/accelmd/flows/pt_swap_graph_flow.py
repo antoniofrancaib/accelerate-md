@@ -201,6 +201,10 @@ class PTSwapGraphFlow(nn.Module):
         if edge_batch_idx is None:
             edge_batch_idx = torch.empty(0, dtype=torch.long, device=device)
         
+        # If no padding mask provided, treat only negative atom indices as padding
+        if masked_elements is None:
+            masked_elements = (atom_types < 0) if atom_types is not None else torch.zeros(coordinates.shape[:2], dtype=torch.bool, device=device)
+        
         # Apply flow transformation with real molecular connectivity
         output_coords, log_det = self.flow(
             coordinates=coordinates,

@@ -1,0 +1,75 @@
+experiment_name: "AA_simple_mcmc"
+
+# Device selection: "auto" | "cpu" | "cuda"
+# Use "auto" to prefer GPU if available.
+device: "auto"
+
+# Peptide to train on (two-letter code); auto-fills data paths.
+peptide_code: AA
+
+# Temperature ladder (must match the PT dataset)
+temperatures:
+  values: [300.0, 450.0, 670.0, 1000.0]
+
+# Adjacent temperature pairs to train
+temperature_pairs:
+  - [0, 1]
+  - [1, 2]
+  - [2, 3]
+  - [3, 4]
+  - [0, 4]
+
+# Data section – paths will be filled automatically from `peptide_code` unless
+# explicitly overridden.
+data:
+  subsample_rate: 10    # Use much more data (was 100) - 10x more samples
+  filter_chirality: false
+  center_coordinates: false
+  augment_coordinates: true #to be implemented
+
+# Model hyper-parameters
+model:
+  # Architecture selection: "simple" (PTSwapFlow), "graph" (PTSwapGraphFlow), or "transformer" (PTSwapTransformerFlow)
+  architecture: "simple"  # Options: "simple", "graph", "transformer"
+  
+  # Core flow parameters - INCREASED CAPACITY
+  flow_layers: 8      # More coupling layers for complex transformations (was 8)
+  hidden_dim: 512     # Much larger hidden layers (was 512)
+  
+training:
+  batch_size: 32      # Smaller batch due to much larger model (was 64)
+  learning_rate: 0.0001  # Lower LR for more careful training (was 0.0001)
+  num_epochs: 3000     # More epochs for larger model (was 100)
+  val_split: 0.1
+  early_stopping_patience: 100  # More patience for larger model (was 50)
+  clip_grad_norm: 10.0  # Higher grad clipping for stability (was 5.0)
+  warmup_epochs: 10   # Add warmup for stability (was 0)
+  min_lr: 0.000005    # Lower minimum LR (was 0.00005)
+  lr_factor: 0.5      # Less aggressive reduction (was 0.3)
+  lr_patience: 10     # More patience for LR reduction (was 5)
+
+  # Loss component weights (can be scheduled over warmup_epochs)
+  nll_start: 1.0    # NLL weight at training start
+  nll_end: 1.0      # NLL weight at training end
+  acc_start: 0.0    # Acceptance loss weight at start (disabled)
+  acc_end: 0.5      # Acceptance loss weight at end (disabled)
+
+# Output directories
+output:
+  base_dir: "outputs"
+
+system:
+  temperature: 300.0
+  energy_cut: 1.0e8 
+  energy_max: 1.0e20 
+  n_threads: 64
+  transform: cartesian 
+  shift_dih: false
+  env: implicit 
+
+# Target configuration for evaluation and plotting
+target:
+  name: dipeptide
+  kwargs:
+    pdb_path: datasets/pt_dipeptides/AA/ref.pdb
+    env: implicit 

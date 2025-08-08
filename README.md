@@ -4,12 +4,12 @@ conda activate accelmd && \
 sbatch --export=TRAIN_MODE=single,TEMP_PAIR="0 2" \
        run_pt_swap_flows.sh
 
-conda activate accelmd && python -u main.py --config configs/multi_graph.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/multi_graph/pair_0_1/models/best_model_epoch100.pt --num-eval-samples 20000
+conda activate accelmd && python -u main.py --config configs/multi_transformer_mcmc.yaml --evaluate --temp-pair 0 1 --checkpoint outputs/multi_transformer_mcmc/pair_0_1/models/best_model_epoch47.pt 
 
 
+python experiments/SAR/evaluate_sar.py --architecture simple --pair 0 1 --peptide AA --num-seeds 10
 
-
-conda activate accelmd && python main.py --config configs/multi_graph.yaml --temp-pair 0 1 --epochs 3000
+conda activate accelmd && python main.py --config configs/AA_simple_mcmc.yaml --temp-pair 2 3 --epochs 3000
 
 git fetch origin && git reset --hard origin/main
 
@@ -170,4 +170,67 @@ See `configs/multi_peptide_example.yaml` for a complete configuration example.
 │  trains flow (trainer)  │──►  src/accelmd/trainers/*
 │  runs evaluators        │
 └─────────────────────────┘
+```
+
+## Replica Exchange Kinetics Workflow
+
+### Long Sanity Runs
+Run comprehensive 50k-step PT simulations for validation:
+
+```bash
+# 1. Long sanity run
+python scripts/run_long_pt.py
+```
+
+This launches two simulations:
+- **Vanilla PT**: Standard replica exchange (no flows)
+- **Transformer Flow PT**: Enhanced with learned swap kernels
+
+Results saved to `experiments/analysis/results/longtest/` with detailed metrics.
+
+### Kinetics Dashboard
+Generate a comprehensive 4-panel performance comparison:
+
+```bash
+# 2. Build the dashboard  
+python -m experiments.analysis.kinetics_dashboard
+open experiments/analysis/results/kinetics/replica_exchange_dashboard.png
+```
+
+The dashboard provides:
+- **Panel A**: Mean swap acceptance rates
+- **Panel B**: Round-trip times (cold→hot→cold)
+- **Panel C**: φ dihedral autocorrelation times
+- **Panel D**: Computational cost breakdown
+
+### Individual PT Simulations
+Run custom PT simulations with the new `src/run_pt.py` tool:
+
+```bash
+# Vanilla PT simulation
+python -m src.run_pt --cfg configs/AA_simple.yaml \
+                     --out_dir results/my_vanilla \
+                     --n_steps 20000 --no_flow
+
+# Flow-enhanced PT simulation  
+python -m src.run_pt --cfg configs/multi_transformer.yaml \
+                     --checkpoint_dir checkpoints/multi_transformer \
+                     --out_dir results/my_flow \
+                     --n_steps 20000
+
+# Quick test with synthetic data
+python -m src.run_pt --cfg configs/AA_simple.yaml \
+                     --out_dir results/test \
+                     --n_steps 1000 --dry_run
+```
+
+### Testing
+Run the CI test suite:
+
+```bash
+# Run all tests
+conda activate accelmd && pytest -q tests/
+
+# Run specific PT tests
+conda activate accelmd && pytest -q tests/test_run_pt.py
 ```

@@ -690,18 +690,12 @@ def main():
     all_checkpoint_paths = {
         "simple": {
             "pair_0_1": "checkpoints/AA_simple/pair_0_1/models/best_model_epoch2787.pt",
-            "pair_1_2": "checkpoints/AA_simple/pair_1_2/models/best_model_epoch1231.pt",
-            "pair_2_3": "checkpoints/AA_simple/pair_2_3/models/best_model_epoch1301.pt",
-            "pair_3_4": "checkpoints/AA_simple/pair_3_4/models/best_model_epoch773.pt",
         },
         "transformer": {
             "pair_0_1": "checkpoints/multi_transformer/pair_0_1/models/best_model_epoch331.pt",
-            "pair_1_2": "checkpoints/multi_transformer/pair_1_2/models/best_model_epoch325.pt",
-            "pair_2_3": "checkpoints/multi_transformer/pair_2_3/models/best_model_epoch257.pt",
-            "pair_3_4": "checkpoints/multi_transformer/pair_3_4/models/best_model_epoch254.pt",
         },
         "graph": {
-            "pair_0_1": "outputs/multi_graph/pair_0_1/models/best_model_epoch1475.pt",
+            "pair_0_1": "checkpoints/multi_graph/pair_0_1/models/best_model_epoch2764.pt",
         }
     }
     

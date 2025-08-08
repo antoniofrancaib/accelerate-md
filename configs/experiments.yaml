@@ -3,6 +3,10 @@
 # This file centralizes all trained model checkpoint paths for different architectures
 # and peptides, making it easy to switch between experiments without hardcoding paths.
 
+temperatures:
+  #values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+  values: [300.0, 450.0, 670.0, 1000.0]
+
 checkpoints:
   # Simple architecture (coordinate-to-coordinate flows)
   simple:
@@ -14,7 +18,7 @@ checkpoints:
     
     AK:
       # Add AK simple checkpoints here when available
-      pair_0_1: null
+      pair_0_1: checkpoints/AK_simple/pair_0_1/models/best_model_epoch1787.pt
       pair_1_2: null
       pair_2_3: null
       pair_3_4: null
@@ -32,9 +36,13 @@ checkpoints:
   transformer:
     # Multi-peptide transformer models (trained on all peptides)
     multi_peptide:
-      pair_0_1: "checkpoints/multi_transformer/pair_0_1/models/best_model_epoch331.pt"
-      pair_1_2: "checkpoints/multi_transformer/pair_1_2/models/best_model_epoch325.pt"
-      pair_2_3: "checkpoints/multi_transformer/pair_2_3/models/best_model_epoch257.pt"
+    
+      pair_0_1: "outputs/multi_transformer_mcmc/pair_0_1/models/best_model_epoch47.pt"
+      pair_1_2: "outputs/multi_transformer_mcmc/pair_1_2/models/best_model_epoch50.pt"
+      pair_2_3: "outputs/multi_transformer_mcmc/pair_2_3/models/best_model_epoch46.pt"
+      #pair_0_1: "checkpoints/multi_transformer/pair_0_1/models/best_model_epoch331.pt"
+      #pair_1_2: "checkpoints/multi_transformer/pair_1_2/models/best_model_epoch325.pt"
+      #pair_2_3: "checkpoints/multi_transformer/pair_2_3/models/best_model_epoch257.pt"
       pair_3_4: "checkpoints/multi_transformer/pair_3_4/models/best_model_epoch254.pt"
     
 # Configuration templates for each architecture
