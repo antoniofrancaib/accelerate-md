@@ -1,4 +1,4 @@
-experiment_name: "multi_graph"
+experiment_name: "multi_graph_acc05"
 
 # Multi-peptide mode configuration
 mode: multi           # Enable multi-peptide training
@@ -15,7 +15,7 @@ device: "auto"
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
-  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+  values: [300.0, 450.0, 670.0, 1000.0]
 
 # Adjacent temperature pairs to train
 temperature_pairs:
@@ -28,39 +28,37 @@ temperature_pairs:
 
 # Data section - paths automatically determined from peptides
 data:
-  subsample_rate: 1000
+  subsample_rate: 100
   filter_chirality: false
   center_coordinates: false
-  augment_coordinates: false  # Enable random rotation augmentation
+  augment_coordinates: true  # Enable random rotation augmentation
   
 # Model hyper-parameters - MUST use graph or transformer architecture
 model:
   # Architecture: MUST be "graph" or "transformer" for multi-peptide mode
   architecture: "graph"  # Options: "graph", "transformer"
-  
   flow_layers: 8
   hidden_dim: 512
   
-  # Graph-specific parameters (only used when architecture="graph")
   graph:
     atom_vocab_size: 4              # H, C, N, O
     atom_embed_dim: 256              # Dimension of atom type embeddings
     hidden_dim: 512                 # Hidden dimension for message passing
     # Scale-range annealing for graph flow
-    scale_range: 0.05               # Initial log-scale amplitude (~±5 %)
-    scale_range_end: 0.25           # Final amplitude (~±15 %)
-    scale_range_schedule_epochs: 20 # Epochs over which to anneal
+    scale_range: 1.0          # log-scale clamp ±1  ⇒  scale ∈ [e^-1 , e^+1] ≈ [0.37, 2.72]
+    scale_range_end: 1.0
+    scale_range_schedule_epochs: 0   # or just leave; same start/end gives flat schedule
+    shift_range: 3.0  
     num_mp_layers: 3                # Number of message-passing layers per coupling layer
 
 # Training hyper-parameters
 training:
   batch_size: 32      # Smaller batch size for mixed peptide training
   learning_rate: 0.0001
-  num_epochs: 1000
+  num_epochs: 3000
   val_split: 0.1
   early_stopping_patience: 25
   clip_grad_norm: 5.0
-  warmup_epochs: 20
   min_lr: 0.00005
   lr_factor: 0.3
   lr_patience: 2
@@ -68,9 +66,10 @@ training:
   # Loss component weights
   nll_start: 1.0      # NLL weight at training start
   nll_end: 1.0        # NLL weight at training end
-  acc_start: 0.0      # Acceptance loss weight at start
+  acc_start: 0.5      # Acceptance loss weight at start
   acc_end: 0.5        # Acceptance loss weight at end
-
+  warmup_epochs: 0
+  
 # Output directories
 output:
   base_dir: "outputs"

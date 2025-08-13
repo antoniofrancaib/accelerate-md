@@ -194,7 +194,8 @@ class PTSwapTransformerFlow(nn.Module):
         reverse: bool = False,  # For interface compatibility
         velocities: Optional[Tensor] = None,  # [B, N, 3]
         return_log_det: bool = True,
-    ) -> Tuple[Tensor, Optional[Tensor]]:
+        return_separate_log_dets: bool = False,  # Return (total, pos, vel) log-dets
+    ) -> Tuple[Tensor, Optional[Tensor]] | Tuple[Tensor, Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
         """Forward pass through the transformer flow.
         
         Parameters
@@ -221,12 +222,32 @@ class PTSwapTransformerFlow(nn.Module):
         transformed_coords : Tensor, shape [B, N, 3]
             Transformed coordinates
         log_det : Tensor, shape [B], optional
-            Log determinant of the transformation
+            Total log determinant of the transformation
+        log_det_pos : Tensor, shape [B], optional
+            Position-only log determinant (only when return_separate_log_dets=True)
+        log_det_vel : Tensor, shape [B], optional
+            Velocity-only log determinant (only when return_separate_log_dets=True)
         """
         # Validate required inputs
         if atom_types is None:
             raise ValueError("atom_types is required for transformer flow")
         
+        # Handle concatenated (positions+velocities) input
+        input_is_concatenated = False
+        if coordinates.shape[1] % 2 == 0 and velocities is None:
+            # Assume input is concatenated [positions, velocities]
+            n_atoms = coordinates.shape[1] // 2
+            positions = coordinates[:, :n_atoms, :]
+            velocities = coordinates[:, n_atoms:, :]
+            coordinates = positions  # Use positions as base coordinates
+            input_is_concatenated = True
+        else:
+            # Standard input format
+            positions = coordinates
+            if velocities is None:
+                # Sample from base distribution (Gaussian)
+                velocities = torch.randn_like(coordinates)
+
         batch_size, max_atoms, _ = coordinates.shape
         device = coordinates.device
 
@@ -238,11 +259,6 @@ class PTSwapTransformerFlow(nn.Module):
         if next(self.parameters()).device != device:
             self.to(device)
         
-        # Handle velocities
-        if velocities is None:
-            # Sample from base distribution (Gaussian)
-            velocities = torch.randn_like(coordinates)
-        
         # Move atom_types to the same device as coordinates
         atom_types = atom_types.to(device)
         
@@ -253,8 +269,10 @@ class PTSwapTransformerFlow(nn.Module):
         if masked_elements is None:
             masked_elements = self._create_padding_mask(atom_types)  # [B, N]
         
-        # Initialize log determinant
+        # Initialize log determinants
         log_det = torch.zeros(batch_size, device=device) if return_log_det else None
+        log_det_pos = torch.zeros(batch_size, device=device) if (return_log_det and return_separate_log_dets) else None
+        log_det_vel = torch.zeros(batch_size, device=device) if (return_log_det and return_separate_log_dets) else None
         
         # Current state
         z_coords = coordinates.clone()
@@ -289,15 +307,21 @@ class PTSwapTransformerFlow(nn.Module):
                     # Forward transformation: z = z * scale + shift
                     z_coords = z_coords * scale + shift
                 
-                # Update log determinant with correct signs
+                # Update log determinant with correct signs (POSITION layer)
                 if return_log_det:
                     # Only count non-masked elements
                     scale_log = torch.log(scale + 1e-8)  # Small epsilon for stability
                     scale_log = scale_log * (~masked_elements).unsqueeze(-1).float()
+                    scale_log_sum = scale_log.sum(dim=[1, 2])
+                    
                     if reverse:
-                        log_det -= scale_log.sum(dim=[1, 2])  # Subtract for inverse
+                        log_det -= scale_log_sum  # Subtract for inverse
+                        if return_separate_log_dets:
+                            log_det_pos -= scale_log_sum  # Track position log-det separately
                     else:
-                        log_det += scale_log.sum(dim=[1, 2])  # Add for forward
+                        log_det += scale_log_sum  # Add for forward
+                        if return_separate_log_dets:
+                            log_det_pos += scale_log_sum  # Track position log-det separately
                     
             else:  # layer.transformed_vars == "velocities"
                 # Transform velocities - use CURRENT state for conditioning (before transformation)
@@ -322,17 +346,32 @@ class PTSwapTransformerFlow(nn.Module):
                     # Forward transformation: z = z * scale + shift
                     z_velocs = z_velocs * scale + shift
                 
-                # Update log determinant with correct signs
+                # Update log determinant with correct signs (VELOCITY layer)
                 if return_log_det:
                     # Only count non-masked elements
                     scale_log = torch.log(scale + 1e-8)  # Small epsilon for stability
                     scale_log = scale_log * (~masked_elements).unsqueeze(-1).float()
+                    scale_log_sum = scale_log.sum(dim=[1, 2])
+                    
                     if reverse:
-                        log_det -= scale_log.sum(dim=[1, 2])  # Subtract for inverse
+                        log_det -= scale_log_sum  # Subtract for inverse
+                        if return_separate_log_dets:
+                            log_det_vel -= scale_log_sum  # Track velocity log-det separately
                     else:
-                        log_det += scale_log.sum(dim=[1, 2])  # Add for forward
+                        log_det += scale_log_sum  # Add for forward
+                        if return_separate_log_dets:
+                            log_det_vel += scale_log_sum  # Track velocity log-det separately
         
-        return z_coords, log_det
+        # Prepare output in the same structural convention as input
+        if input_is_concatenated:
+            z_output = torch.cat([z_coords, z_velocs], dim=1)  # [B, 2N, 3]
+        else:
+            z_output = z_coords  # [B, N, 3]
+
+        if return_separate_log_dets:
+            return z_output, log_det, log_det_pos, log_det_vel
+        else:
+            return z_output, log_det
     
     def log_likelihood(
         self,

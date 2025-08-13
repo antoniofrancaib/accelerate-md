@@ -217,8 +217,11 @@ def _build_model_from_config(config: dict, pair: Tuple[int, int], device: str):
             atom_embed_dim=graph_cfg.get("atom_embed_dim", 32),
             hidden_dim=graph_cfg.get("hidden_dim", model_cfg["hidden_dim"]),
             scale_range=graph_cfg.get("scale_range", 0.05),  # Conservative for stability
+            scale_range_end=graph_cfg.get("scale_range_end", 0.15),  # Final scale range
+            scale_range_schedule_epochs=graph_cfg.get("scale_range_schedule_epochs", 20),  # Annealing epochs
             max_neighbors=graph_cfg.get("max_neighbors", 20),  # Timewarp parameter
             distance_cutoff=graph_cfg.get("distance_cutoff", 8.0),  # Timewarp parameter
+            temperature_conditioning=graph_cfg.get("temperature_conditioning", True),  # Temperature conditioning
             source_temperature=temps[pair[0]],
             target_temperature=temps[pair[1]],
             target_name=target_name,

@@ -17,7 +17,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config
-from src.accelmd.utils.ramachandran_plotting import generate_ramachandran_grid
 from src.accelmd.data.pt_pair_dataset import PTTemperaturePairDataset
 from src.accelmd.flows import PTSwapFlow, PTSwapGraphFlow
 from src.accelmd.evaluation.swap_acceptance import naive_acceptance, flow_acceptance
@@ -111,7 +110,7 @@ def build_model(model_cfg: dict, pair: Tuple[int, int], temps: list, target_name
         raise ValueError(f"Unknown architecture: {architecture}. Must be 'simple', 'graph', or 'transformer'.")
 
 
-def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None = None):
+def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None = None, resume_checkpoint: str | None = None):
     base_cfg = load_config(cfg_path)
     if epochs_override is not None:
         base_cfg["training"]["num_epochs"] = epochs_override
@@ -307,6 +306,12 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
         num_atoms=model_cfg["num_atoms"],  # Only used for simple architecture
     )
 
+    # Load checkpoint if resuming training
+    if resume_checkpoint:
+        print(f"Resuming training from checkpoint: {resume_checkpoint}")
+        state_dict = torch.load(resume_checkpoint, map_location=device)
+        model.load_state_dict(state_dict)
+
     trainer = PTSwapTrainer(
         model=model,
         train_loader=loader_train,
@@ -331,7 +336,7 @@ def train_pair(cfg_path: str, pair: Tuple[int, int], epochs_override: int | None
     return best_ckpt
 
 
-def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_samples: int, save_metrics: bool = True):
+def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_samples: int, save_metrics: bool = True, repeats: int = 1):
     base_cfg = load_config(cfg_path)
     device = setup_device(base_cfg)
 
@@ -356,7 +361,8 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
                 num_samples=num_samples,
                 save_metrics=save_metrics,
                 peptide_code=peptide,
-                is_multi_mode=True
+                is_multi_mode=True,
+                repeats=repeats
             )
     else:
         print("Evaluating in single-peptide mode")
@@ -369,7 +375,8 @@ def evaluate_pair(cfg_path: str, pair: Tuple[int, int], checkpoint: str, num_sam
             num_samples=num_samples,
             save_metrics=save_metrics,
             peptide_code=None,  # Will be read from config
-            is_multi_mode=False
+            is_multi_mode=False,
+            repeats=repeats
         )
 
 
@@ -380,7 +387,8 @@ def _evaluate_single_peptide(
     num_samples: int, 
     save_metrics: bool,
     peptide_code: str | None,
-    is_multi_mode: bool
+    is_multi_mode: bool,
+    repeats: int = 1,
 ):
     """Evaluate a single peptide for the given temperature pair.
     
@@ -405,21 +413,18 @@ def _evaluate_single_peptide(
     cfg = create_run_config(base_cfg, pair, setup_device(base_cfg))
 
     if is_multi_mode:
-        # Create peptide-specific output directory
+        # Create peptide-specific output directory (metrics only)
         low, high = pair
         base_output_dir = Path(cfg["output"]["pair_dir"])
         peptide_output_dir = base_output_dir / peptide_code
         peptide_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create subdirectories
-        for subdir in ["metrics", "plots"]:
-            (peptide_output_dir / subdir).mkdir(exist_ok=True)
         
         # Build peptide-specific dataset
         peptide_dir = Path("datasets/pt_dipeptides") / peptide_code
         pt_data_path = peptide_dir / f"pt_{peptide_code}.pt"
         molecular_data_path = peptide_dir
         
+        # Build a deterministic dataset instance for shape/config discovery
         dataset = PTTemperaturePairDataset(
             pt_data_path=str(pt_data_path),
             molecular_data_path=str(molecular_data_path),
@@ -428,6 +433,7 @@ def _evaluate_single_peptide(
             device="cpu",
             filter_chirality=cfg["data"].get("filter_chirality", False),
             center_coordinates=cfg["data"].get("center_coordinates", True),
+            random_subsample=False,
         )
         
         # Determine target configuration for this peptide
@@ -444,6 +450,7 @@ def _evaluate_single_peptide(
             }
     else:
         # Single-peptide mode - use original logic
+        # Build a deterministic dataset instance for shape/config discovery
         dataset = PTTemperaturePairDataset(
             pt_data_path=cfg["data"]["pt_data_path"],
             molecular_data_path=cfg["data"]["molecular_data_path"],
@@ -452,6 +459,7 @@ def _evaluate_single_peptide(
             device="cpu",
             filter_chirality=cfg["data"].get("filter_chirality", False),
             center_coordinates=cfg["data"].get("center_coordinates", True),
+            random_subsample=False,
         )
         
         # Determine target based on peptide_code from config
@@ -476,12 +484,6 @@ def _evaluate_single_peptide(
     cfg["model"]["num_atoms"] = dynamic_num_atoms
     
     batch_size = cfg["training"].get("batch_size", 64)
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=PTTemperaturePairDataset.collate_fn,
-    )
 
     # Build flow model & load checkpoint - now uses dynamic num_atoms
     model_cfg = cfg["model"]
@@ -522,12 +524,82 @@ def _evaluate_single_peptide(
     # Limit number of batches to cover roughly num_samples
     max_batches = (num_samples + batch_size - 1) // batch_size
 
-    naive_acc = naive_acceptance(loader, base_low, base_high, max_batches=max_batches)
-    flow_acc = flow_acceptance(loader, model, base_low, base_high, device=setup_device(base_cfg), max_batches=max_batches)
+    # Repeat evaluation with different random subsamples and aggregate
+    seed_base = 1337
+    naive_values: list[float] = []
+    flow_values: list[float] = []
 
-    print(f"\nSwap acceptance estimate for {peptide_code} (pair {pair[0]} ↔ {pair[1]}, {num_samples} samples)")
-    print("    naïve swap : %.4f" % naive_acc)
-    print("    flow swap  : %.4f" % flow_acc)
+    for rep in range(max(1, int(repeats))):
+        try:
+            # Build dataset for this repeat with randomized subsampling
+            if is_multi_mode:
+                ds = PTTemperaturePairDataset(
+                    pt_data_path=str(pt_data_path),
+                    molecular_data_path=str(molecular_data_path),
+                    temp_pair=pair,
+                    subsample_rate=cfg["data"].get("subsample_rate", 100),
+                    device="cpu",
+                    filter_chirality=cfg["data"].get("filter_chirality", False),
+                    center_coordinates=cfg["data"].get("center_coordinates", True),
+                    random_subsample=True,
+                    random_seed=seed_base + rep,
+                )
+            else:
+                ds = PTTemperaturePairDataset(
+                    pt_data_path=cfg["data"]["pt_data_path"],
+                    molecular_data_path=cfg["data"]["molecular_data_path"],
+                    temp_pair=pair,
+                    subsample_rate=cfg["data"].get("subsample_rate", 100),
+                    device="cpu",
+                    filter_chirality=cfg["data"].get("filter_chirality", False),
+                    center_coordinates=cfg["data"].get("center_coordinates", True),
+                    random_subsample=True,
+                    random_seed=seed_base + rep,
+                )
+
+            # Bootstrap sampler with replacement to draw exactly num_samples items
+            from torch.utils.data import RandomSampler
+            sampler = RandomSampler(ds, replacement=True, num_samples=num_samples)
+            loader_rep = DataLoader(
+                ds,
+                batch_size=batch_size,
+                sampler=sampler,
+                shuffle=False,
+                collate_fn=PTTemperaturePairDataset.collate_fn,
+            )
+
+            naive_acc = naive_acceptance(loader_rep, base_low, base_high)
+            flow_acc = flow_acceptance(loader_rep, model, base_low, base_high, device=setup_device(base_cfg))
+
+            naive_values.append(float(naive_acc))
+            flow_values.append(float(flow_acc))
+            print(f"Repeat {rep+1}/{repeats} for {peptide_code}: naive={naive_acc:.4f}, flow={flow_acc:.4f}")
+        except Exception as e:
+            print(f"Warning: evaluation repeat {rep+1} failed for {peptide_code}: {e}")
+
+    def _mean_ci(values: list[float]) -> tuple[float, float]:
+        import math
+        n = len(values)
+        if n == 0:
+            return 0.0, 0.0
+        mean_v = sum(values) / n
+        if n == 1:
+            return mean_v, 0.0
+        # sample std
+        var = sum((v - mean_v) ** 2 for v in values) / (n - 1)
+        std = math.sqrt(var)
+        # simple t critical for 95% CI; df=n-1
+        t_table = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571, 7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262}
+        t_crit = t_table.get(n, 1.96)
+        ci = t_crit * std / math.sqrt(n)
+        return mean_v, ci
+
+    naive_mean, naive_ci = _mean_ci(naive_values)
+    flow_mean, flow_ci = _mean_ci(flow_values)
+
+    print(f"\nSwap acceptance for {peptide_code} (pair {pair[0]} ↔ {pair[1]}, {num_samples} samples per repeat, repeats={repeats})")
+    print(f"    naïve swap : {naive_mean:.4f} ± {naive_ci:.4f} (95% CI)")
+    print(f"    flow swap  : {flow_mean:.4f} ± {flow_ci:.4f} (95% CI)")
 
     if save_metrics:
         if is_multi_mode:
@@ -543,74 +615,18 @@ def _evaluate_single_peptide(
         with open(out_path, "w") as fh:
             json.dump({
                 "peptide_code": peptide_code,
-                "naive_acceptance": naive_acc,
-                "flow_acceptance": flow_acc,
-                "num_samples": num_samples
+                "repeats": repeats,
+                "num_samples_per_repeat": num_samples,
+                "naive_acceptance_values": naive_values,
+                "flow_acceptance_values": flow_values,
+                "naive_mean": naive_mean,
+                "naive_ci95": naive_ci,
+                "flow_mean": flow_mean,
+                "flow_ci95": flow_ci
             }, fh, indent=2)
         print(f"Metrics saved to {out_path}")
     
-    # Generate Ramachandran plot
-    if is_multi_mode:
-        _generate_rama_plot_peptide(cfg_path, pair, checkpoint, peptide_code)
-    else:
-        _generate_rama_plot(cfg_path, pair, checkpoint)
-
-
-def _generate_rama_plot(cfg_path: str, pair: Tuple[int,int], checkpoint: str):
-    """Generate 2×2 Ramachandran grid for the given pair using the utility function.
-
-    The plot is saved under <pair_dir>/plots/rama_grid.png where *pair_dir* is
-    dictated by `create_run_config` in utils.config.
-    """
-    base_cfg = load_config(cfg_path)
-    run_cfg = create_run_config(base_cfg, pair, device="cpu")
-    plots_dir = Path(run_cfg["output"]["pair_dir"]).expanduser() / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plots_dir / "rama_grid.png"
-
-    try:
-        success = generate_ramachandran_grid(
-            config_path=cfg_path,
-            checkpoint_path=str(checkpoint),
-            temp_pair=pair,
-            output_path=str(out_path),
-            n_samples=20000,
-        )
-        if not success:
-            print(f"[WARN] Ramachandran plot generation failed for pair {pair}")
-        else:
-            print(f"Ramachandran plot saved to {out_path}")
-    except Exception as e:
-        print(f"[WARN] Ramachandran plot generation failed for pair {pair}: {e}")
-
-
-def _generate_rama_plot_peptide(cfg_path: str, pair: Tuple[int, int], checkpoint: str, peptide_code: str):
-    """Generate 2×2 Ramachandran grid for a single peptide using the utility function.
-
-    The plot is saved under <pair_dir>/<peptide_code>/plots/rama_grid.png.
-    """
-    base_cfg = load_config(cfg_path)
-    run_cfg = create_run_config(base_cfg, pair, device="cpu")
-    peptide_output_dir = Path(run_cfg["output"]["pair_dir"]) / peptide_code
-    plots_dir = peptide_output_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plots_dir / "rama_grid.png"
-
-    try:
-        success = generate_ramachandran_grid(
-            config_path=cfg_path,
-            checkpoint_path=str(checkpoint),
-            temp_pair=pair,
-            output_path=str(out_path),
-            n_samples=20000,
-            peptide_code_override=peptide_code,  # Pass peptide override
-        )
-        if not success:
-            print(f"[WARN] Ramachandran plot generation failed for peptide {peptide_code}")
-        else:
-            print(f"Ramachandran plot saved to {out_path}")
-    except Exception as e:
-        print(f"[WARN] Ramachandran plot generation failed for peptide {peptide_code}: {e}")
+    # Ramachandran plot generation removed for evaluation-only runs
 
 
 def main():
@@ -621,13 +637,15 @@ def main():
     parser.add_argument("--evaluate", action="store_true", help="Evaluate swap acceptance instead of training")
     parser.add_argument("--checkpoint", type=str, help="Path to model checkpoint for evaluation")
     parser.add_argument("--num-eval-samples", type=int, default=20000, help="Number of evaluation samples")
+    parser.add_argument("--eval-repeats", type=int, default=1, help="Repeat evaluation this many times with different resampled data and report mean with 95% CI")
+    parser.add_argument("--resume", type=str, help="Path to model checkpoint to resume training from")
     args = parser.parse_args()
 
     if args.evaluate:
         if not args.checkpoint or not args.temp_pair:
             raise ValueError("--checkpoint and --temp-pair are required with --evaluate")
         pair = tuple(args.temp_pair)
-        evaluate_pair(args.config, pair, args.checkpoint, num_samples=args.num_eval_samples, save_metrics=False)
+        evaluate_pair(args.config, pair, args.checkpoint, num_samples=args.num_eval_samples, save_metrics=False, repeats=args.eval_repeats)
         return
 
     # ------------------------------------------------------------------
@@ -644,17 +662,17 @@ def main():
 
     if args.temp_pair:
         pair = tuple(args.temp_pair)
-        ckpt_path = train_pair(args.config, pair, epochs_override=args.epochs)
+        ckpt_path = train_pair(args.config, pair, epochs_override=args.epochs, resume_checkpoint=args.resume)
         if ckpt_path is not None:
-            evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
+            evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000, repeats=args.eval_repeats)
         else:
             print(f"No checkpoint found for pair {pair}. Skipping evaluation.")
     else:
         cfg = load_config(args.config)
         for pair in get_temperature_pairs(cfg):
-            ckpt_path = train_pair(args.config, tuple(pair), epochs_override=args.epochs)
+            ckpt_path = train_pair(args.config, tuple(pair), epochs_override=args.epochs, resume_checkpoint=args.resume)
             if ckpt_path is not None:
-                evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000)
+                evaluate_pair(args.config, tuple(pair), str(ckpt_path), num_samples=20000, repeats=args.eval_repeats)
             else:
                 print(f"No checkpoint found for pair {pair}. Skipping evaluation.")
 

@@ -1,4 +1,4 @@
-experiment_name: "multi_transformer"
+experiment_name: "multi_transformer_acc05"
 
 # Multi-peptide mode configuration
 mode: multi           # Enable multi-peptide training
@@ -15,7 +15,7 @@ device: "auto"
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
-  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+  values: [300.0, 450.0, 670.0, 1000.0]
 
 # Adjacent temperature pairs to train
 temperature_pairs:
@@ -28,7 +28,7 @@ temperature_pairs:
 
 # Data section - paths automatically determined from peptides
 data:
-  subsample_rate: 10000
+  subsample_rate: 100
   filter_chirality: false
   center_coordinates: false
   augment_coordinates: true  # Enable random rotation augmentation

@@ -154,8 +154,8 @@ class TransformerCouplingLayer(nn.Module):
             masked_elements=masked_elements  
         )  # [B, N, 3]
         
-        # Regularize log-scale to prevent numerical instability (matching other coupling layers)
-        log_scale = torch.tanh(raw_log_scale) * 0.05  # Limit to ±0.05
+        # Use raw log-scale without tanh constraint for more expressivity
+        log_scale = raw_log_scale
         
         # Exponentiate to get positive scale
         scale = torch.exp(log_scale)  # [B, N, 3]

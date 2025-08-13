@@ -1,3 +1,0 @@
-[submodule "external/boltzmann-generators"]
-	path = external/boltzmann-generators
-	url = https://github.com/VincentStimper/boltzmann-generators.git

@@ -63,8 +63,8 @@ class PositionCouplingLayer(FlowModule):
         x_a = x[:, ~self.mask]  # conditioning
         params = self.net(x_a)  # [B, out_dim]
         s, t = params.chunk(2, dim=-1)
-        # Match Timewarp behaviour: small initial log-scale (~0) so flow starts near identity
-        s = torch.tanh(s) * 0.05  # scale factor shrinks range to ±0.05
+        # Use raw log-scale without tanh constraint for more expressivity
+        s = s
         log_scale = s  # log s
         scale = torch.exp(log_scale)
 

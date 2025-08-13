@@ -8,7 +8,7 @@ from typing import Dict, Tuple
 import torch
 from torch.utils.data import DataLoader
 
-from .losses import bidirectional_nll
+from .losses import bidirectional_nll, augmented_bidirectional_nll, acceptance_loss, augmented_acceptance_loss
 from src.accelmd.utils.config import load_config, setup_device, get_temperature_pairs, create_run_config, get_energy_threshold
 
 __all__ = ["PTSwapTrainer"]
@@ -289,26 +289,51 @@ class PTSwapTrainer:
             # --------------------------------------------------------------
 
             with torch.set_grad_enabled(training):
-                nll_total, nll_forward, nll_reverse = bidirectional_nll(
-                    self.model,
-                    batch,
-                    energy_threshold=self.energy_threshold,
-                    return_components=True,
-                    current_epoch=self._current_epoch,
-                )
-
-                # Compute acceptance loss if weight > 0
-                if acc_weight > 0:
-                    from .losses import acceptance_loss
-                    acc_loss = acceptance_loss(
+                # Choose loss function based on model architecture
+                from ..flows.pt_swap_transformer_flow import PTSwapTransformerFlow
+                
+                if isinstance(self.model, PTSwapTransformerFlow):
+                    # Use augmented losses for transformer (includes velocities)
+                    nll_total, nll_forward, nll_reverse = augmented_bidirectional_nll(
                         self.model,
                         batch,
-                        beta_low=self.model.base_low.beta,
-                        beta_high=self.model.base_high.beta,
                         energy_threshold=self.energy_threshold,
+                        return_components=True,
+                        current_epoch=self._current_epoch,
                     )
+                    
+                    # Compute augmented acceptance loss if weight > 0
+                    if acc_weight > 0:
+                        acc_loss = augmented_acceptance_loss(
+                            self.model,
+                            batch,
+                            beta_low=self.model.base_low.beta,
+                            beta_high=self.model.base_high.beta,
+                            energy_threshold=self.energy_threshold,
+                        )
+                    else:
+                        acc_loss = torch.tensor(0.0, device=self.device)
                 else:
-                    acc_loss = torch.tensor(0.0, device=self.device)
+                    # Use position-only losses for simple and graph flows
+                    nll_total, nll_forward, nll_reverse = bidirectional_nll(
+                        self.model,
+                        batch,
+                        energy_threshold=self.energy_threshold,
+                        return_components=True,
+                        current_epoch=self._current_epoch,
+                    )
+
+                    # Compute acceptance loss if weight > 0
+                    if acc_weight > 0:
+                        acc_loss = acceptance_loss(
+                            self.model,
+                            batch,
+                            beta_low=self.model.base_low.beta,
+                            beta_high=self.model.base_high.beta,
+                            energy_threshold=self.energy_threshold,
+                        )
+                    else:
+                        acc_loss = torch.tensor(0.0, device=self.device)
 
             # Apply weights to loss components
             total = nll_weight * nll_total + acc_weight * acc_loss

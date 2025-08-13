@@ -140,23 +140,61 @@ def flow_acceptance(
                 masked_elements = masked_elements.to(model_device)
             
             # Graph/transformer flow uses different interface
-            y_high, log_det_f = model.forward(
-                coordinates=x_low,
-                atom_types=atom_types,
-                adj_list=adj_list,
-                edge_batch_idx=edge_batch_idx,
-                masked_elements=masked_elements,
-                reverse=False
-            )  # low → high
-            
-            y_low, log_det_inv = model.forward(
-                coordinates=x_high,
-                atom_types=atom_types,
-                adj_list=adj_list,
-                edge_batch_idx=edge_batch_idx,
-                masked_elements=masked_elements,
-                reverse=True
-            )  # high → low
+            if isinstance(model, PTSwapTransformerFlow):
+                # For transformer, we need to provide velocities but only count position log-dets
+                # Sample zero velocities (we only care about position transport)
+                v_low = torch.zeros_like(x_low)   # [B, N, 3]
+                v_high = torch.zeros_like(x_high) # [B, N, 3]
+                
+                # Concatenate positions and velocities
+                qv_low = torch.cat([x_low, v_low], dim=1)    # [B, 2N, 3]
+                qv_high = torch.cat([x_high, v_high], dim=1) # [B, 2N, 3]
+                
+                # Forward: position-only evaluation
+                qv_high_full, _, log_det_f_pos, _ = model.forward(
+                    coordinates=qv_low,
+                    atom_types=atom_types,
+                    masked_elements=masked_elements,
+                    reverse=False,
+                    return_log_det=True,
+                    return_separate_log_dets=True
+                )
+                y_high = qv_high_full[:, :x_low.shape[1], :]  # Extract positions only
+                
+                # Inverse: position-only evaluation  
+                qv_low_full, _, log_det_inv_pos, _ = model.forward(
+                    coordinates=qv_high,
+                    atom_types=atom_types,
+                    masked_elements=masked_elements,
+                    reverse=True,
+                    return_log_det=True,
+                    return_separate_log_dets=True
+                )
+                y_low = qv_low_full[:, :x_high.shape[1], :]  # Extract positions only
+                
+                # Use only position log-dets for proper evaluation
+                log_det_f = log_det_f_pos
+                log_det_inv = log_det_inv_pos
+                
+            else:
+                # Graph flow uses different interface
+                y_high, log_det_f = model.forward(
+                    coordinates=x_low,
+                    atom_types=atom_types,
+                    adj_list=adj_list,
+                    edge_batch_idx=edge_batch_idx,
+                    masked_elements=masked_elements,
+                    reverse=False
+                )  # low → high
+                
+                y_low, log_det_inv = model.forward(
+                    coordinates=x_high,
+                    atom_types=atom_types,
+                    adj_list=adj_list,
+                    edge_batch_idx=edge_batch_idx,
+                    masked_elements=masked_elements,
+                    reverse=True
+                )  # high → low
             
         else:
             # Simple flow (PTSwapFlow)

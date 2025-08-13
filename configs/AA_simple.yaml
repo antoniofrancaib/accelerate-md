@@ -9,7 +9,7 @@ peptide_code: AA
 
 # Temperature ladder (must match the PT dataset)
 temperatures:
-  values: [300.0, 448.6046433448792, 670.82040309906, 1003.1104803085328, 1500.0]
+  values: [300.0, 450.0, 670.0, 1000.0]
 
 # Adjacent temperature pairs to train
 temperature_pairs:
@@ -22,10 +22,10 @@ temperature_pairs:
 # Data section – paths will be filled automatically from `peptide_code` unless
 # explicitly overridden.
 data:
-  subsample_rate: 10000    # Use much more data (was 100) - 10x more samples
+  subsample_rate: 100    # Use much more data (was 100) - 10x more samples
   filter_chirality: false
   center_coordinates: false
-  augment_coordinates: false #to be implemented
+  augment_coordinates: true #to be implemented
 
 # Model hyper-parameters
 model:
@@ -36,7 +36,6 @@ model:
   flow_layers: 8      # More coupling layers for complex transformations (was 8)
   hidden_dim: 512     # Much larger hidden layers (was 512)
   
-# Training hyper-parameters - ADJUSTED FOR INCREASED CAPACITY
 training:
   batch_size: 32      # Smaller batch due to much larger model (was 64)
   learning_rate: 0.0001  # Lower LR for more careful training (was 0.0001)
@@ -59,7 +58,6 @@ training:
 output:
   base_dir: "outputs"
 
-# Supervisor-provided system parameters (for AldpBoltzmann)
 system:
   temperature: 300.0
   energy_cut: 1.0e8 
