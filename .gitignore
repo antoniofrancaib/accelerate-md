@@ -1,5 +1,3 @@
-datasets/
-!datasets/aldp/position_min_energy.pt
 plots/
 results/
 scripts/ 
@@ -10,8 +8,11 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 
-timewarp/
-main/
+checkpoints/
+run_pt_swap_flows.sh
+
+experiments/
+notebooks/
 .vscode/
 docs/ 
 logs/
@@ -22,6 +23,8 @@ run_experiment.sh
 outputs/ 
 legacy/
 wandb/
+
+run_pt.py
 
 env/
 venv/
