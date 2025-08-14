@@ -14,7 +14,7 @@ where $T$ is temperature and $k_B$ the Boltzmann constant. The normalizing const
 
 ## Local MCMC: 
 
-Classical MCMC methods (e.g. MALA, HMC) explore well near the current state but struggle to leave metastable basins in high dimensions. In practices, this causes mode collapse and poor mixing (e.g. see left figure).
+Classical MCMC methods (e.g. MALA, HMC) explore well near the current state but struggle to leave metastable basins in high dimensions. In practice, this causes mode collapse and poor mixing (e.g. see left figure).
 
 <div align="center">
   <img src="assets/mcmc_sampling.png" alt="Local MCMC trapped in one region" width="45%"/>
@@ -29,7 +29,7 @@ PT runs multiple replicas across a temperature ladder. Hot replicas cross barrie
   <img src="assets/tempering_ladder.png" alt="PT creates a ladder of tempered densities" width="45%"/>
 </div>
 
-However, PT helps when **neighboring temperatures overlap**. In high dimensions this overlap collapses (e.g. the curse of dimensionality), swap acceptance falls, and we must add many closely spaced replicas—raising computational cost.
+However, PT helps when **neighboring temperatures overlap**. In high dimensions this overlap collapses (e.g. the curse of dimensionality), swap acceptance falls, and we must add many closely spaced replicas, raising computational cost.
 
 ## Our Approach:
 
@@ -47,7 +47,7 @@ A **transferable** neural transport that generalizes **across peptides and tempe
 
 ---
 
-## Implementation:
+## Codebase:
 
 
 ### Environment
