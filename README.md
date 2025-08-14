@@ -1,4 +1,54 @@
-Accelerating Molecular Dynamics with swap-flow proposals for Parallel Tempering. This repository trains normalizing flows that morph coordinates between adjacent temperatures to increase swap acceptance.
+# Accelerating Parallel Tempering with Generative Models
+
+## Problem: Sampling Unnormalized Densities
+
+We need representative samples from high-dimensional targets that are known only up to a constant. 
+
+For an $N$-atoms molecular system with coordinates $x \in \Omega \subset \mathbb{R}^{3N}$ and energy $U(x)$, the Boltzmann density is
+
+$$
+\mu_\beta(x) \propto \exp(-\beta\,U(x)),\quad \beta = (k_B T)^{-1},
+$$
+
+where $T$ is temperature and $k_B$ the Boltzmann constant. The normalizing constant (partition function) is intractable, so **sampling** is the task.
+
+## Local MCMC: 
+
+Classical MCMC methods (e.g. MALA, HMC) explore well near the current state but struggle to leave metastable basins in high dimensions. In practices, this causes mode collapse and poor mixing (e.g. see left figure).
+
+<div align="center">
+  <img src="assets/mcmc_sampling.png" alt="Local MCMC trapped in one region" width="45%"/>
+  <img src="assets/pt_vanilla_swaps.png" alt="PT enables moves across regions in low dimension" width="45%"/>
+</div>
+
+## Parallel Tempering (PT): 
+
+PT runs multiple replicas across a temperature ladder. Hot replicas cross barriers more easily, and **replica swaps** let the cold replica inherit diverse states. A Metropolis–Hastings correction keeps sampling exact. This induces better exploration and mixing (e.g. see right figure above). For intuitive understanding, see the figure below.
+
+<div align="center">
+  <img src="assets/tempering_ladder.png" alt="PT creates a ladder of tempered densities" width="45%"/>
+</div>
+
+However, PT helps when **neighboring temperatures overlap**. In high dimensions this overlap collapses (e.g. the curse of dimensionality), swap acceptance falls, and we must add many closely spaced replicas—raising computational cost.
+
+## Our Approach:
+
+Instead of swapping raw coordinates, we **learn an invertible transport** between adjacent temperatures and swap the transported states. This **engineers overlap** at practical temperature gaps, raises swap acceptance, while keeping exactness via the usual MH correction.
+
+## Architectures: 
+
+- **PTSwapFlow** — coordinate-only RealNVP; fast. peptide-specific baseline.  
+- **PTSwapGraphFlow** — message passing on radius graphs; uses atom types and neighborhoods; permutation-equivariant and rotation-aware.  
+- **PTSwapTransformerFlow** — global attention in augmented (coordinates + auxiliary velocities) space for long-range couplings.
+
+## Goal in Future Work:
+
+A **transferable** neural transport that generalizes **across peptides and temperature pairs**. The model is conditioned on the temperature pair so one trained system can be reused along the ladder and across related systems.
+
+---
+
+## Implementation:
+
 
 ### Environment
 
@@ -56,46 +106,6 @@ conda activate accelmd && python -u main.py --config configs/multi_transformer.y
 ```
 
 Omit `--temp-pair` to iterate through all pairs listed in the config.
-
-### Configuration overview
-
-Configs live in `configs/`. Two ready-to-use examples are provided: `AA_simple.yaml`, `multi_graph.yaml`, `multi_transformer.yaml`.
-
-Single‑peptide minimal example: `configs/AA_simple.yaml`
-
-Multi‑peptide minimal example (requires `architecture: graph` or `transformer`): `configs/multi_graph.yaml` or `configs/multi_transformer.yaml`
-
-Notes:
-- In single mode, `peptide_code` auto-fills `data.pt_data_path` and `data.molecular_data_path`.
-- In multi mode, datasets are discovered from `datasets/pt_dipeptides/<PEP>/` for all peptides listed.
-- For `AX`, the ALDP target is used; otherwise the dipeptide target uses `ref.pdb` with implicit solvent.
-- For the simple architecture, `num_atoms` is inferred from data and injected before model build.
-
-### Training and evaluation details
-
-The trainer minimises a weighted sum of bidirectional NLL (low→high, high→low) and an acceptance‑oriented loss. Weights can be scheduled (`nll_start/end`, `acc_start/end`, `warmup_epochs`). Gradients are clipped (`clip_grad_norm`). LR scheduling uses `ReduceLROnPlateau` on validation loss. Energies and Boltzmann bases are evaluated on CPU. During training a checkpoint is saved whenever validation loss improves; after training, the most recent best checkpoint is used for evaluation.
-
-Evaluation computes naïve and flow‑based swap acceptance over resampled subsets; in multi‑peptide mode, each peptide is evaluated separately and results are printed. Internally, metrics can be saved to `metrics/swap_acceptance.json` when invoked with saving enabled.
-
-
-### CLI reference (`main.py`)
-
-```text
---config PATH                 YAML config
---temp-pair i j               Train/evaluate this temperature pair (omit to run all)
---epochs N                    Override num_epochs for quick tests (training only)
---evaluate                    Run evaluation instead of training
---checkpoint PATH             Checkpoint to load for evaluation or resume
---num-eval-samples N          Samples per evaluation run (default 20000)
---eval-repeats K              Resampled runs to estimate CI (default 1)
---resume PATH                 Resume training from checkpoint
-```
-
-### Troubleshooting
-
-- If evaluation complains about missing files, check `datasets/pt_dipeptides/<PEP>/` contains `pt_<PEP>.pt`, `atom_types.pt`, `adj_list.pt`, and `ref.pdb`.
-- Temperature indices in `temperature_pairs` refer to positions in `temperatures.values` (not Kelvin).
-- OpenMM runs on CPU; adjust `system.n_threads` if needed.
 
 ### License
 
